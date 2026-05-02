@@ -150,6 +150,120 @@ def format_outcome(rows: Iterable[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _fmt_signed_inr(v: float | None) -> str:
+    if v is None:
+        return "—"
+    return f"{'+' if v >= 0 else '-'}₹{abs(float(v)):,.0f}"
+
+
+def _box_top(width: int = 31) -> str:  return "┌" + "─" * width + "┐"
+def _box_mid(width: int = 31) -> str:  return "├" + "─" * width + "┤"
+def _box_bot(width: int = 31) -> str:  return "└" + "─" * width + "┘"
+def _box_row(text: str, width: int = 31) -> str:
+    inner = width - 2
+    return f"│ {text:<{inner}} │"
+
+
+def format_eod_summary(date_str: str, usage: dict[str, Any], perf: dict[str, Any]) -> str:
+    """Compose the comprehensive 4 PM Telegram summary.
+
+    `usage`: {runs: [{run_type, model_used, input_tokens, output_tokens,
+                      total_tokens, cost_usd, ist_time}],
+              today_tokens, today_cost_usd, today_cost_inr,
+              mtd_cost_usd, mtd_cost_inr,
+              projected_cost_usd, projected_cost_inr}
+    `perf`:  {recs_count, executed_count, skipped_count,
+              executed_rows: [{ticker, action, actual_pnl_inr, mark}],
+              total_pnl, loss_limit_used, loss_limit, alpha,
+              best, worst, awaiting_prices: bool}
+    """
+    lines: list[str] = []
+    lines.append(f"📊 <b>End of Day Summary — {date_str}</b>")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("")
+
+    # ---- AI USAGE ----
+    lines.append("🤖 <b>AI USAGE TODAY</b>")
+    usage_lines: list[str] = [_box_top()]
+    runs = usage.get("runs") or []
+    if not runs:
+        usage_lines.append(_box_row("No AI runs logged today"))
+    else:
+        for r in runs:
+            t = r.get("ist_time", "—")
+            model = r.get("model_short", r.get("model_used", "?")) or "?"
+            tokens = r.get("total_tokens", 0)
+            cost = r.get("cost_usd", 0.0) or 0.0
+            usage_lines.append(_box_row(f"{t:<8} {model:<6} {tokens:>6,} tok") + f" ${cost:.3f}")
+    usage_lines.append(_box_mid())
+    usage_lines.append(_box_row(
+        f"Today total:  {usage.get('today_tokens', 0):>5,} tokens"
+    ) + f" ${usage.get('today_cost_usd', 0):.3f} / ₹{usage.get('today_cost_inr', 0):.2f}")
+    usage_lines.append(_box_row(
+        f"MTD total:    ${usage.get('mtd_cost_usd', 0):.2f} / ₹{usage.get('mtd_cost_inr', 0):.0f}"
+    ))
+    usage_lines.append(_box_row(
+        f"Projected:    ${usage.get('projected_cost_usd', 0):.2f} / ₹{usage.get('projected_cost_inr', 0):.0f}"
+    ))
+    usage_lines.append(_box_bot())
+    lines.append("<pre>" + "\n".join(usage_lines) + "</pre>")
+    lines.append("")
+
+    # ---- TRADING PERFORMANCE ----
+    lines.append("💰 <b>TRADING PERFORMANCE</b>")
+    perf_lines: list[str] = [_box_top()]
+    recs_count = perf.get("recs_count", 0)
+    perf_lines.append(_box_row(f"Recommendations: {recs_count}"))
+    perf_lines.append(_box_row(
+        f"Executed: {perf.get('executed_count', 0)} | Skipped: {perf.get('skipped_count', 0)}"
+    ))
+    perf_lines.append(_box_mid())
+
+    executed_rows = perf.get("executed_rows") or []
+    if not executed_rows:
+        perf_lines.append(_box_row("No trades executed today"))
+    elif perf.get("awaiting_prices"):
+        perf_lines.append(_box_row("Awaiting closing prices"))
+    else:
+        for row in executed_rows:
+            mark = row.get("mark", "✅")
+            ticker = row.get("ticker", "—")
+            action = row.get("action", "—")
+            pnl_str = _fmt_signed_inr(row.get("actual_pnl_inr"))
+            perf_lines.append(_box_row(f"{mark} {ticker:<10} {action:<5} {pnl_str}"))
+    perf_lines.append(_box_mid())
+
+    if executed_rows and not perf.get("awaiting_prices"):
+        perf_lines.append(_box_row(f"P&L today:        {_fmt_signed_inr(perf.get('total_pnl'))}"))
+        perf_lines.append(_box_row(
+            f"Loss limit used:  ₹{int(perf.get('loss_limit_used') or 0):,}/₹{int(perf.get('loss_limit') or 0):,}"
+        ))
+        alpha = perf.get("alpha")
+        alpha_str = f"{alpha:+.1f}%" if alpha is not None else "—"
+        perf_lines.append(_box_row(f"Alpha vs Nifty:   {alpha_str}"))
+        perf_lines.append(_box_mid())
+        best = perf.get("best")
+        worst = perf.get("worst")
+        if best:
+            perf_lines.append(_box_row(f"🏆 Best:  {best['ticker']:<10} {_fmt_signed_inr(best.get('actual_pnl_inr'))}"))
+        if worst:
+            perf_lines.append(_box_row(f"💥 Worst: {worst['ticker']:<10} {_fmt_signed_inr(worst.get('actual_pnl_inr'))}"))
+    elif perf.get("awaiting_prices"):
+        perf_lines.append(_box_row("P&L:              awaiting prices"))
+    else:
+        perf_lines.append(_box_row("P&L today:        —"))
+        perf_lines.append(_box_row(
+            f"Loss limit used:  ₹0/₹{int(perf.get('loss_limit') or 0):,}"
+        ))
+
+    perf_lines.append(_box_bot())
+    lines.append("<pre>" + "\n".join(perf_lines) + "</pre>")
+    lines.append("")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("<i>⚠️ Manual execution only</i>")
+    return "\n".join(lines)
+
+
 def format_weekly_scorecard(summary: dict[str, Any]) -> str:
     return (
         "<b>📅 Weekly scorecard</b>\n\n"

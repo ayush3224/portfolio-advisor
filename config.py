@@ -78,6 +78,10 @@ NEWS_CACHE_TTL = 3600       # 1 hour
 PORTFOLIO_CACHE_TTL = 300   # 5 minutes
 
 
+# --- FX (for USD → INR conversion in cost reports) ---
+USD_TO_INR = 83.5
+
+
 # --- Telegram channels (handle → weight) ---
 TELEGRAM_CHANNELS: dict[str, int] = {
     "religarebrokingofficial": 3,

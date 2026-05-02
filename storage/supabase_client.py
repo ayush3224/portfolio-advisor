@@ -250,6 +250,63 @@ def finish_run(
     ).eq("id", run_id).execute()
 
 
+def get_run_log_between(start_iso: str, end_iso: str) -> list[dict[str, Any]]:
+    """Return run_log rows whose started_at is within [start_iso, end_iso]."""
+    client = get_client()
+    if client is None:
+        return []
+    try:
+        res = (
+            client.table("run_log")
+            .select("*")
+            .gte("started_at", start_iso)
+            .lte("started_at", end_iso)
+            .order("started_at", desc=False)
+            .execute()
+        )
+        return res.data or []
+    except Exception as exc:
+        log.warning("run_log lookup failed (%s) — returning []", exc)
+        return []
+
+
+def get_recommendations_between(start_iso: str, end_iso: str) -> list[dict[str, Any]]:
+    """Return advisor_recommendations created within [start_iso, end_iso]."""
+    client = get_client()
+    if client is None:
+        return []
+    try:
+        res = (
+            client.table("advisor_recommendations")
+            .select("*")
+            .gte("created_at", start_iso)
+            .lte("created_at", end_iso)
+            .execute()
+        )
+        return res.data or []
+    except Exception as exc:
+        log.warning("advisor_recommendations lookup failed (%s) — returning []", exc)
+        return []
+
+
+def get_backtest_results_for_run_date(run_date: str) -> list[dict[str, Any]]:
+    """Return backtest_results dated exactly run_date (YYYY-MM-DD)."""
+    client = get_client()
+    if client is None:
+        return []
+    try:
+        res = (
+            client.table("backtest_results")
+            .select("*")
+            .eq("run_date", run_date)
+            .execute()
+        )
+        return res.data or []
+    except Exception as exc:
+        log.warning("backtest_results lookup failed (%s) — returning []", exc)
+        return []
+
+
 def realised_pnl_today() -> float:
     """Sum of actual_pnl_inr for backtest_results dated today (UTC)."""
     client = get_client()
