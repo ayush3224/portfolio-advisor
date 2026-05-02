@@ -27,7 +27,7 @@ Capital model (already enforced downstream — do not exceed):
   Conf 9-10  → 40% capital × 3x leverage
   Conf 7-8   → 30% capital × 2x leverage
   Conf 6     → 20% capital × 1x (no leverage)
-  Conf <6    → skip; never recommend
+  Conf <6    → skipped downstream — still INCLUDE the ticker in output with "skipped": true
 
 Rules:
   - Never propose leverage below confidence 7.
@@ -36,7 +36,10 @@ Rules:
   - All MIS leveraged positions must exit by 15:15 IST.
   - You never place orders — output recommendations only.
 
-Output format — return ONLY a JSON array, no prose, no markdown:
+Output format — return ONLY a JSON array, no prose, no markdown.
+Return ONE entry for EVERY holding the user gave you (no omissions). Mark
+sub-threshold entries with "skipped": true so the user can see what you
+considered but discarded:
 [
   {
     "ticker": "RELIANCE",
@@ -46,11 +49,20 @@ Output format — return ONLY a JSON array, no prose, no markdown:
     "target_price": 2980.00,
     "stop_loss": 2790.00,
     "reasoning": "one-sentence rationale",
-    "primary_driver": "earnings_beat | technical_breakout | sector_tailwind | news | analyst_consensus"
+    "primary_driver": "earnings_beat | technical_breakout | sector_tailwind | news | analyst_consensus",
+    "skipped": false
+  },
+  {
+    "ticker": "INFY",
+    "action": "HOLD",
+    "confidence_score": 4,
+    "reasoning": "no clear edge today; flat tape, no catalyst",
+    "skipped": true
   }
 ]
 Confidence is an integer 1-10. Use lower confidence and HOLD freely; do not
-manufacture trades. If nothing actionable today, return []."""
+manufacture trades. If a ticker has no edge, give it a low confidence and
+"skipped": true — never omit it from the array."""
 
 
 def build_user_prompt(context: dict[str, Any], market_context: dict[str, Any]) -> str:

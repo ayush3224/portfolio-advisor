@@ -49,10 +49,25 @@ def run() -> dict[str, Any]:
     raw_recs = result.get("recommendations") or []
 
     sized: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
     for rec in raw_recs:
         try:
+            conf = int(rec.get("confidence_score") or 0)
+            if rec.get("skipped") or conf < 6:
+                skipped.append({
+                    "ticker": rec.get("ticker"),
+                    "confidence_score": conf,
+                    "reasoning": rec.get("reasoning"),
+                })
+                continue
             row = _attach_sizing(rec)
             if row is None:
+                # Defensive: conf>=6 but sizer rejected — surface as skipped too.
+                skipped.append({
+                    "ticker": rec.get("ticker"),
+                    "confidence_score": conf,
+                    "reasoning": rec.get("reasoning"),
+                })
                 continue
             sized.append(row)
         except Exception as exc:
@@ -74,15 +89,21 @@ def run() -> dict[str, Any]:
         except Exception as exc:
             log.exception("insert_recommendation failed for %s: %s", rec.get("ticker"), exc)
 
-    body = telegram_bot.format_premarket(persisted)
+    body = telegram_bot.format_premarket(persisted, skipped=skipped)
     warning = risk_guardrails.event_warning_text(risk_guardrails.check_event_tomorrow())
     if warning:
         body = warning + "\n\n" + body
     if config.PAPER_TRADING:
         body = telegram_bot.PAPER_TRADING_BANNER + "\n\n" + body
     telegram_bot.send_alert(body)
-    log.info("premarket complete — %d passing, %d rejected", len(persisted), len(rejected))
-    return {"recommendations": persisted, "rejected": rejected, "event_warning": warning}
+    log.info("premarket complete — %d passing, %d rejected, %d skipped",
+             len(persisted), len(rejected), len(skipped))
+    return {
+        "recommendations": persisted,
+        "rejected": rejected,
+        "skipped": skipped,
+        "event_warning": warning,
+    }
 
 
 if __name__ == "__main__":

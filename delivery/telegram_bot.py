@@ -60,11 +60,22 @@ def _fmt_price(p: Any) -> str:
     return f"₹{float(p):,.2f}"
 
 
-def format_premarket(recommendations: Iterable[dict[str, Any]]) -> str:
-    """Pre-market advisory message."""
+def format_premarket(
+    recommendations: Iterable[dict[str, Any]],
+    *,
+    skipped: Iterable[dict[str, Any]] | None = None,
+) -> str:
+    """Pre-market advisory message.
+
+    `skipped` — tickers Claude analysed but discarded (confidence < 6 or
+    explicit skipped=true). Surfaced in a footer so the user can see what
+    was considered and why.
+    """
     recs = list(recommendations)
+    skipped_list = list(skipped or [])
     if not recs:
-        return "<b>🌅 Pre-market 9:00 AM</b>\n\nNo actionable recommendations today. Hold all positions."
+        body = "<b>🌅 Pre-market 9:00 AM</b>\n\nNo actionable recommendations today. Hold all positions."
+        return body + _skipped_footer(skipped_list)
     lines = ["<b>🌅 Pre-market 9:00 AM</b>", ""]
     for r in recs:
         action_emoji = {
@@ -89,7 +100,24 @@ def format_premarket(recommendations: Iterable[dict[str, Any]]) -> str:
             lines.append(f"   <i>{r['reasoning']}</i>")
         lines.append("")
     lines.append("<i>⚠️ Manual execution only — system never places orders.</i>")
-    return "\n".join(lines)
+    return "\n".join(lines) + _skipped_footer(skipped_list)
+
+
+def _skipped_footer(skipped: list[dict[str, Any]]) -> str:
+    if not skipped:
+        return ""
+    lines = [
+        "",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        "🔕 <b>SKIPPED (confidence below threshold)</b>",
+    ]
+    for s in skipped:
+        ticker = s.get("ticker") or "—"
+        conf = s.get("confidence_score")
+        conf_str = f"{conf}/10" if conf is not None else "?/10"
+        reason = (s.get("reasoning") or "").strip() or "no reasoning provided"
+        lines.append(f"<b>{ticker}</b> — conf {conf_str} | Reason: <i>{reason}</i>")
+    return "\n" + "\n".join(lines)
 
 
 def format_midday(checks: Iterable[dict[str, Any]]) -> str:
