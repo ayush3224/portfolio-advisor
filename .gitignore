@@ -1,0 +1,12 @@
+.env
+*.session
+*.session-journal
+__pycache__/
+*.pyc
+.venv/
+venv/
+logs/
+*.log
+.DS_Store
+.idea/
+.vscode/

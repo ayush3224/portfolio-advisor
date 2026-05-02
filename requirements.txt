@@ -1,0 +1,13 @@
+anthropic
+upstox-python-sdk
+supabase
+python-telegram-bot
+telethon
+tavily-python
+python-dotenv
+requests
+pandas
+feedparser
+beautifulsoup4
+pytz
+schedule
