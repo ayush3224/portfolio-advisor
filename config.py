@@ -82,6 +82,11 @@ PORTFOLIO_CACHE_TTL = 300   # 5 minutes
 USD_TO_INR = 83.5
 
 
+# --- Project identity (used to scope run_log queries away from sibling apps) ---
+PROJECT_NAME = "portfolio-advisor"
+PROJECT_RUN_TYPES = ("premarket", "midday", "eod", "weekly_scorecard")
+
+
 # --- Telegram channels (handle → weight) ---
 TELEGRAM_CHANNELS: dict[str, int] = {
     "religarebrokingofficial": 3,

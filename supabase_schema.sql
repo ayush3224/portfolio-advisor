@@ -93,6 +93,7 @@ create index if not exists idx_backtest_ticker on backtest_results (ticker);
 -- 6. Run log (every scheduler invocation — for cost & error tracking)
 create table if not exists run_log (
     id                      uuid primary key default gen_random_uuid(),
+    project                 varchar(30) default 'portfolio-advisor',  -- scope cost reports per app
     run_type                text not null,
     started_at              timestamptz not null default now(),
     completed_at            timestamptz,
@@ -103,5 +104,8 @@ create table if not exists run_log (
     estimated_cost_usd      numeric(10, 6),
     error_message           text
 );
+-- Idempotent for already-existing run_log tables that pre-date the project column.
+alter table run_log add column if not exists project varchar(30) default 'portfolio-advisor';
 create index if not exists idx_run_log_started on run_log (started_at desc);
 create index if not exists idx_run_log_run_type on run_log (run_type);
+create index if not exists idx_run_log_project on run_log (project);

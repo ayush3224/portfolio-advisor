@@ -210,11 +210,19 @@ def start_run(run_type: str) -> str | None:
     client = get_client()
     if client is None:
         return None
-    res = (
-        client.table("run_log")
-        .insert({"run_type": run_type, "started_at": _utcnow_iso(), "status": "running"})
-        .execute()
-    )
+    payload = {
+        "project": config.PROJECT_NAME,
+        "run_type": run_type,
+        "started_at": _utcnow_iso(),
+        "status": "running",
+    }
+    try:
+        res = client.table("run_log").insert(payload).execute()
+    except Exception as exc:
+        # Older run_log tables may not have the `project` column; retry without it.
+        log.warning("run_log insert with project failed (%s) — retrying without project column", exc)
+        payload.pop("project", None)
+        res = client.table("run_log").insert(payload).execute()
     return res.data[0]["id"] if res.data else None
 
 
@@ -251,23 +259,48 @@ def finish_run(
 
 
 def get_run_log_between(start_iso: str, end_iso: str) -> list[dict[str, Any]]:
-    """Return run_log rows whose started_at is within [start_iso, end_iso]."""
+    """Return run_log rows whose started_at is within [start_iso, end_iso].
+
+    Scopes results to this project: `project = 'portfolio-advisor'` OR
+    (project IS NULL AND run_type IN PROJECT_RUN_TYPES). The fallback
+    catches rows written before the `project` column was added.
+    """
     client = get_client()
     if client is None:
         return []
+    run_types_csv = ",".join(config.PROJECT_RUN_TYPES)
+    or_clause = (
+        f"project.eq.{config.PROJECT_NAME},"
+        f"and(project.is.null,run_type.in.({run_types_csv}))"
+    )
     try:
         res = (
             client.table("run_log")
             .select("*")
             .gte("started_at", start_iso)
             .lte("started_at", end_iso)
+            .or_(or_clause)
             .order("started_at", desc=False)
             .execute()
         )
         return res.data or []
     except Exception as exc:
-        log.warning("run_log lookup failed (%s) — returning []", exc)
-        return []
+        # `project` column may not exist in older tables — fall back to run_type only.
+        log.warning("run_log lookup with project filter failed (%s) — falling back to run_type", exc)
+        try:
+            res = (
+                client.table("run_log")
+                .select("*")
+                .gte("started_at", start_iso)
+                .lte("started_at", end_iso)
+                .in_("run_type", list(config.PROJECT_RUN_TYPES))
+                .order("started_at", desc=False)
+                .execute()
+            )
+            return res.data or []
+        except Exception as exc2:
+            log.warning("run_log fallback lookup failed (%s) — returning []", exc2)
+            return []
 
 
 def get_recommendations_between(start_iso: str, end_iso: str) -> list[dict[str, Any]]:
