@@ -177,3 +177,7 @@ KNOWN_EVENTS: list[dict[str, str]] = [
 # --- Operational flags ---
 DRY_RUN = _get("DRY_RUN", "false").lower() == "true"
 USE_MOCK_PORTFOLIO = _get("USE_MOCK_PORTFOLIO", "false").lower() == "true"
+# PAPER_TRADING=true loads a mock portfolio, banners every Telegram message,
+# and tags every persisted recommendation as paper. Use this for Monday rehearsals
+# and any pre-Upstox-token validation.
+PAPER_TRADING = _get("PAPER_TRADING", "false").lower() == "true"

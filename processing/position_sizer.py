@@ -24,10 +24,16 @@ class PositionSize:
     capital_deployed: float       # margin actually committed (own money)
     notional_exposure: float      # capital_deployed × leverage
     shares_qty: int
+    is_paper: bool = False
 
 
 def size_for(confidence: int, entry_price: float | None) -> PositionSize | None:
-    """Return PositionSize for a recommendation, or None to skip."""
+    """Return PositionSize for a recommendation, or None to skip.
+
+    Sizing math is identical regardless of PAPER_TRADING — we want realistic
+    sizes in paper mode so the recommendations look real. The is_paper flag
+    is carried through so downstream code (DB, Telegram) can tag accordingly.
+    """
     sizing = config.sizing_for_confidence(int(confidence))
     if sizing is None:
         log.info("Confidence %s below threshold — skipping recommendation", confidence)
@@ -45,6 +51,7 @@ def size_for(confidence: int, entry_price: float | None) -> PositionSize | None:
         capital_deployed=capital_deployed,
         notional_exposure=notional,
         shares_qty=max(shares, 0),
+        is_paper=bool(config.PAPER_TRADING),
     )
 
 
@@ -82,6 +89,7 @@ def calculate_position_size(
         "capital_deployed": sized.capital_deployed,
         "notional_exposure": sized.notional_exposure,
         "shares_qty": sized.shares_qty,
+        "is_paper": sized.is_paper,
         "entry_price": entry_price,
         "stop_loss": stop_loss,
         "risk_per_share": risk_per_share,

@@ -19,6 +19,11 @@ log = logging.getLogger(__name__)
 
 _API_BASE = "https://api.telegram.org"
 
+PAPER_TRADING_BANNER = (
+    "<b>📋 PAPER TRADING — mock portfolio</b>\n"
+    "<i>Results are simulated, not real positions</i>"
+)
+
 
 def send_alert(text: str, *, parse_mode: str = "HTML", disable_web_preview: bool = True) -> bool:
     """Send a Telegram message. Returns True on success, False on failure or DRY_RUN."""
@@ -217,6 +222,10 @@ def format_eod_summary(date_str: str, usage: dict[str, Any], perf: dict[str, Any
     perf_lines.append(_box_row(
         f"Executed: {perf.get('executed_count', 0)} | Skipped: {perf.get('skipped_count', 0)}"
     ))
+    paper_count = perf.get("paper_count", 0) or 0
+    real_count = perf.get("real_count", 0) or 0
+    if paper_count or real_count:
+        perf_lines.append(_box_row(f"📋 Paper: {paper_count} | 💰 Real: {real_count}"))
     perf_lines.append(_box_mid())
 
     executed_rows = perf.get("executed_rows") or []

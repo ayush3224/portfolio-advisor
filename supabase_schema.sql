@@ -35,10 +35,14 @@ create table if not exists advisor_recommendations (
     reasoning           text,
     primary_driver      text,
     user_executed       boolean default false,
+    paper_trade         boolean default false,    -- true when generated under PAPER_TRADING=true
     created_at          timestamptz not null default now()
 );
+-- Idempotent for advisor_recommendations tables that pre-date paper_trade.
+alter table advisor_recommendations add column if not exists paper_trade boolean default false;
 create index if not exists idx_advisor_recs_created on advisor_recommendations (created_at desc);
 create index if not exists idx_advisor_recs_ticker on advisor_recommendations (ticker);
+create index if not exists idx_advisor_recs_paper_trade on advisor_recommendations (paper_trade);
 
 -- 3. Midday checks (12:30 PM intraday review)
 create table if not exists midday_checks (

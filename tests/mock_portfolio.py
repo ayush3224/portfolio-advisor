@@ -1,57 +1,61 @@
-"""Mock portfolio for offline / pre-Upstox testing.
+"""Mock portfolio for paper-trading / pre-Upstox testing.
 
-Activated by USE_MOCK_PORTFOLIO=true. Returns a fully-formed portfolio
-snapshot in the same shape `ingestion.upstox_portfolio.get_portfolio_snapshot`
-produces, plus enriched price blocks compatible with `upstox_prices.enrich_price_block`.
+Activated by PAPER_TRADING=true (preferred) or USE_MOCK_PORTFOLIO=true.
+Returns a fully-formed portfolio snapshot in the shape
+`ingestion.upstox_portfolio.get_portfolio_snapshot` produces, plus enriched
+price blocks compatible with `upstox_prices.enrich_price_block`.
+
+Realistic ~₹5.2L Indian retail portfolio:
+  ICICIBANK  50 @ 1290  Banking
+  HDFCBANK   25 @ 1850  Banking
+  RELIANCE   15 @ 2780  Energy
+  INFY       40 @ 1580  IT
+  SUNPHARMA  20 @ 1700  Pharma
+
+Price proxies (no live data dependency):
+  cmp / close_prev = average_price
+  vwap             = close_prev × 1.002
+  week_52_high     = average_price × 1.25
+  week_52_low      = average_price × 0.75
 """
 
 from __future__ import annotations
 
 import config
 
-# 5 sample holdings — sized for a ~₹5L portfolio
-_HOLDINGS = [
-    {
-        "trading_symbol": "ICICIBANK", "instrument_token": config.instrument_key_for("ICICIBANK"),
-        "quantity": 50, "average_price": 1290.0, "last_price": 1380.0,
-        "instrument_sector": "Financial Services",
-        "vwap": 1372.0, "week_52_high": 1410.0, "week_52_low": 980.0,
-        "open": 1365.0, "high": 1390.0, "low": 1360.0, "close_prev": 1368.0,
-        "volume": 6_500_000,
-    },
-    {
-        "trading_symbol": "SUNPHARMA", "instrument_token": config.instrument_key_for("SUNPHARMA"),
-        "quantity": 30, "average_price": 1720.0, "last_price": 1650.0,
-        "instrument_sector": "Healthcare",
-        "vwap": 1660.0, "week_52_high": 1850.0, "week_52_low": 1430.0,
-        "open": 1655.0, "high": 1672.0, "low": 1640.0, "close_prev": 1668.0,
-        "volume": 1_200_000,
-    },
-    {
-        "trading_symbol": "RELIANCE", "instrument_token": config.instrument_key_for("RELIANCE"),
-        "quantity": 20, "average_price": 2750.0, "last_price": 2840.0,
-        "instrument_sector": "Energy",
-        "vwap": 2825.0, "week_52_high": 3020.0, "week_52_low": 2350.0,
-        "open": 2810.0, "high": 2855.0, "low": 2805.0, "close_prev": 2818.0,
-        "volume": 4_800_000,
-    },
-    {
-        "trading_symbol": "TATASTEEL", "instrument_token": config.instrument_key_for("TATASTEEL"),
-        "quantity": 100, "average_price": 165.0, "last_price": 158.0,
-        "instrument_sector": "Metals",
-        "vwap": 159.5, "week_52_high": 184.0, "week_52_low": 122.0,
-        "open": 159.0, "high": 161.0, "low": 156.5, "close_prev": 160.0,
-        "volume": 22_000_000,
-    },
-    {
-        "trading_symbol": "HDFCBANK", "instrument_token": config.instrument_key_for("HDFCBANK"),
-        "quantity": 40, "average_price": 1800.0, "last_price": 1920.0,
-        "instrument_sector": "Financial Services",
-        "vwap": 1908.0, "week_52_high": 1955.0, "week_52_low": 1430.0,
-        "open": 1905.0, "high": 1928.0, "low": 1900.0, "close_prev": 1902.0,
-        "volume": 5_200_000,
-    },
+# (ticker, qty, avg_price, sector, volume)
+_BASE = [
+    ("ICICIBANK", 50, 1290.0, "Banking", 6_500_000),
+    ("HDFCBANK",  25, 1850.0, "Banking", 5_200_000),
+    ("RELIANCE",  15, 2780.0, "Energy",  4_800_000),
+    ("INFY",      40, 1580.0, "IT",      3_900_000),
+    ("SUNPHARMA", 20, 1700.0, "Pharma",  1_200_000),
 ]
+
+
+def _build_holding(ticker: str, qty: int, avg: float, sector: str, volume: int) -> dict:
+    cmp_ = avg
+    close_prev = avg
+    vwap = round(close_prev * 1.002, 2)
+    return {
+        "trading_symbol": ticker,
+        "instrument_token": config.instrument_key_for(ticker),
+        "quantity": qty,
+        "average_price": avg,
+        "last_price": cmp_,
+        "instrument_sector": sector,
+        "vwap": vwap,
+        "week_52_high": round(avg * 1.25, 2),
+        "week_52_low": round(avg * 0.75, 2),
+        "open": close_prev,
+        "high": round(cmp_ * 1.005, 2),
+        "low": round(cmp_ * 0.995, 2),
+        "close_prev": close_prev,
+        "volume": volume,
+    }
+
+
+_HOLDINGS = [_build_holding(*row) for row in _BASE]
 
 
 def _sector_allocation(holdings: list[dict]) -> dict[str, float]:
@@ -72,9 +76,9 @@ def get_mock_snapshot(run_type: str = "premarket") -> dict:
         "holdings": holdings,
         "positions": [],
         "total_value": total_value,
-        "available_margin": 300_000.0,
-        "used_margin": 200_000.0,
-        "realised_pnl_today": -450.0,
+        "available_margin": 200_000.0,
+        "used_margin": 0.0,
+        "realised_pnl_today": 0.0,
         "sector_allocation": _sector_allocation(holdings),
     }
 

@@ -58,7 +58,7 @@ def fetch_quote(instrument_key: str) -> dict[str, Any] | None:
 
 
 def cmp_for(instrument_key: str) -> float | None:
-    if config.USE_MOCK_PORTFOLIO:
+    if config.PAPER_TRADING or config.USE_MOCK_PORTFOLIO:
         from tests.mock_portfolio import get_mock_cmp
         return get_mock_cmp(instrument_key)
     q = fetch_quote(instrument_key)
@@ -85,7 +85,7 @@ def fetch_52w_levels(instrument_key: str) -> tuple[float | None, float | None]:
 
 def enrich_price_block(instrument_key: str) -> dict[str, Any]:
     """One-shot bundle for use in per-holding context."""
-    if config.USE_MOCK_PORTFOLIO:
+    if config.PAPER_TRADING or config.USE_MOCK_PORTFOLIO:
         from tests.mock_portfolio import get_mock_price_block
         return get_mock_price_block(instrument_key)
     try:

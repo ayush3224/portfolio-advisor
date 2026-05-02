@@ -128,6 +128,8 @@ def build_perf_block(today_ist: date, *, executed_rows_with_pnl: list[dict[str, 
     recs = supabase_client.get_recommendations_between(today_start, today_end)
     executed = [r for r in recs if r.get("user_executed")]
     skipped = len(recs) - len(executed)
+    paper_count = sum(1 for r in recs if r.get("paper_trade"))
+    real_count = len(recs) - paper_count
 
     # Index outcomes by ticker+action so we can attach P&L to executed recs
     by_key = {(b.get("ticker"), b.get("action")): b for b in executed_rows_with_pnl}
@@ -166,6 +168,8 @@ def build_perf_block(today_ist: date, *, executed_rows_with_pnl: list[dict[str, 
         "recs_count": len(recs),
         "executed_count": len(executed),
         "skipped_count": skipped,
+        "paper_count": paper_count,
+        "real_count": real_count,
         "executed_rows": rows,
         "total_pnl": total_pnl if rows else 0,
         "loss_limit_used": loss_used,
@@ -207,6 +211,8 @@ def run() -> dict[str, Any]:
     perf = build_perf_block(today_ist, executed_rows_with_pnl=outcome_rows)
 
     body = telegram_bot.format_eod_summary(today_str, usage, perf)
+    if config.PAPER_TRADING:
+        body = telegram_bot.PAPER_TRADING_BANNER + "\n\n" + body
     telegram_bot.send_alert(body)
     return {"date": today_str, "usage": usage, "perf": perf, "outcome_rows": outcome_rows}
 

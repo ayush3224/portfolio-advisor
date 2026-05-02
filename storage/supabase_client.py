@@ -118,6 +118,7 @@ def insert_recommendation(rec: dict[str, Any]) -> str | None:
         "reasoning": rec.get("reasoning"),
         "primary_driver": rec.get("primary_driver"),
         "user_executed": rec.get("user_executed", False),
+        "paper_trade": bool(rec.get("paper_trade", config.PAPER_TRADING)),
     }
     res = client.table("advisor_recommendations").insert(payload).execute()
     return res.data[0]["id"] if res.data else None

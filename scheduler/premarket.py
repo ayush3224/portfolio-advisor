@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import config
 from analysis import premarket_prompt
 from delivery import telegram_bot
 from ingestion import market_context, upstox_portfolio
@@ -34,6 +35,8 @@ def _attach_sizing(rec: dict[str, Any]) -> dict[str, Any] | None:
         "leverage_multiplier": sizing.leverage_multiplier,
         "capital_deployed": sizing.capital_deployed,
         "shares_qty": sizing.shares_qty,
+        "is_paper": sizing.is_paper,
+        "paper_trade": sizing.is_paper,
     }
 
 
@@ -75,6 +78,8 @@ def run() -> dict[str, Any]:
     warning = risk_guardrails.event_warning_text(risk_guardrails.check_event_tomorrow())
     if warning:
         body = warning + "\n\n" + body
+    if config.PAPER_TRADING:
+        body = telegram_bot.PAPER_TRADING_BANNER + "\n\n" + body
     telegram_bot.send_alert(body)
     log.info("premarket complete — %d passing, %d rejected", len(persisted), len(rejected))
     return {"recommendations": persisted, "rejected": rejected, "event_warning": warning}

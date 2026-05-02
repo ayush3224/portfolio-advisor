@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import config
 from analysis import midday_prompt
 from delivery import telegram_bot
 from ingestion import upstox_portfolio, upstox_prices
@@ -49,8 +50,14 @@ def _build_position_block(pos: dict[str, Any]) -> dict[str, Any] | None:
         return None
 
 
+def _maybe_banner(body: str) -> str:
+    if config.PAPER_TRADING:
+        return telegram_bot.PAPER_TRADING_BANNER + "\n\n" + body
+    return body
+
+
 def run() -> dict[str, Any]:
-    if not risk_guardrails.check_market_hours():
+    if not risk_guardrails.check_market_hours() and not config.PAPER_TRADING:
         log.info("Market closed — midday run aborted")
         return {"decisions": [], "checks": [], "skipped": "market_closed"}
 
@@ -60,7 +67,7 @@ def run() -> dict[str, Any]:
     blocks = [b for b in (_build_position_block(p) for p in leveraged) if b]
 
     if not blocks:
-        telegram_bot.send_alert(telegram_bot.format_midday([]))
+        telegram_bot.send_alert(_maybe_banner(telegram_bot.format_midday([])))
         return {"decisions": [], "checks": []}
 
     result = midday_prompt.run(blocks)
@@ -87,7 +94,7 @@ def run() -> dict[str, Any]:
         except Exception as exc:
             log.exception("midday persist failed for %s: %s", b.get("ticker"), exc)
 
-    telegram_bot.send_alert(telegram_bot.format_midday(persisted))
+    telegram_bot.send_alert(_maybe_banner(telegram_bot.format_midday(persisted)))
     return {"decisions": decisions, "checks": persisted}
 
 

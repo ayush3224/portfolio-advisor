@@ -78,8 +78,12 @@ def get_portfolio_snapshot(run_type: str, *, use_cache: bool = True) -> dict[str
     """Fetch a fresh portfolio snapshot, or return the cached one if fresh.
 
     Persists the snapshot to portfolio_snapshots (unless DRY_RUN).
-    Returns mock data when USE_MOCK_PORTFOLIO=true (offline test mode).
+    Returns mock data when PAPER_TRADING=true or USE_MOCK_PORTFOLIO=true.
     """
+    if config.PAPER_TRADING:
+        from tests.mock_portfolio import get_mock_snapshot
+        log.info("PAPER TRADING MODE — using mock portfolio")
+        return get_mock_snapshot(run_type)
     if config.USE_MOCK_PORTFOLIO:
         from tests.mock_portfolio import get_mock_snapshot
         log.info("USE_MOCK_PORTFOLIO=true — returning mock snapshot")
