@@ -39,10 +39,14 @@ _CONTEXT_QUERIES: dict[str, list[str]] = {
         "crude oil", "Brent", "WTI", "OPEC",
     ],
     "us": [
-        "Federal Reserve", "Fed rate", "Fed cut", "FOMC", "rate cut",
-        "US recession", "S&P 500", "SPX", "SPY", "Nasdaq", "NDX",
-        "NVIDIA", "NVDA", "Apple", "AAPL", "Tesla", "TSLA",
-        "inflation", "CPI", "US GDP", "Treasury yield", "VIX",
+        "Federal Reserve", "Fed rate", "Fed cut", "FOMC",
+        "interest rate cut", "rate cut",
+        "US recession", "US inflation", "US GDP", "Treasury yield",
+        "S&P 500", "S&P 500 year end", "SPX", "SPY", "Nasdaq", "NDX",
+        "artificial intelligence", "semiconductor", "AI stocks", "tech stocks",
+        "NVIDIA", "NVDA", "Apple", "AAPL", "Amazon", "AMZN",
+        "Tesla", "TSLA",
+        "inflation", "CPI", "VIX",
         "tariff", "China invade",
     ],
 }
