@@ -153,6 +153,22 @@ def fetch_fii_dii_flows() -> dict[str, Any]:
         }
 
 
+def fetch_usd_inr_rate() -> float:
+    """Latest USD/INR spot from yfinance. Falls back to 95.31 on any failure.
+
+    Called once at config import time so every cron invocation gets a fresh
+    rate without hitting yfinance per-conversion.
+    """
+    try:
+        hist = yf.Ticker("INR=X").history(period="1d")
+        if hist is None or hist.empty:
+            raise ValueError("empty INR=X history")
+        return round(float(hist["Close"].iloc[-1]), 2)
+    except Exception as exc:
+        log.warning("USD/INR fetch failed (%s) — using fallback 95.31", exc)
+        return 95.31
+
+
 def get_market_context() -> dict[str, Any]:
     """Bundle all market-context signals. Always returns a dict — never None."""
     nifty = fetch_nifty_spot()

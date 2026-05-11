@@ -4,6 +4,12 @@ Inserts a row per ticker into `holdings` with market='US' / currency='USD'.
 If a row for the ticker already exists this script SKIPS — re-running is
 safe and will never double-count. Use SELL or `delete from holdings` to
 correct mistakes.
+
+NOTE on avg_price values: the constants below are USD-denominated estimates
+derived from IndMoney invested_inr / qty / USD_INR (which was ₹83.5 at seed
+time). For any *future* reload that wants to recompute from invested INR,
+import config.USD_INR_RATE (live yfinance INR=X) and divide invested_inr by
+qty × config.USD_INR_RATE — not by the historical 83.5.
 """
 
 from __future__ import annotations

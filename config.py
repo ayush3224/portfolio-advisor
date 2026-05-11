@@ -78,8 +78,19 @@ NEWS_CACHE_TTL = 3600       # 1 hour
 PORTFOLIO_CACHE_TTL = 300   # 5 minutes
 
 
-# --- FX (for USD → INR conversion in cost reports) ---
-USD_TO_INR = 83.5
+# --- FX ---
+# USD_INR_RATE is fetched once per process from yfinance INR=X, falling back
+# to 95.31 on failure. USD_TO_INR is kept as a backwards-compat alias for
+# callers that still import the old name.
+try:
+    from ingestion.market_context import fetch_usd_inr_rate as _fetch_usd_inr
+    USD_INR_RATE: float = _fetch_usd_inr()
+except Exception as _exc:  # pragma: no cover — import-time failures
+    log.warning("USD/INR fetch failed at config import: %s", _exc)
+    USD_INR_RATE = 95.31
+
+log.info("USD/INR rate: %s", USD_INR_RATE)
+USD_TO_INR = USD_INR_RATE  # legacy alias
 
 
 # --- Project identity (used to scope run_log queries away from sibling apps) ---

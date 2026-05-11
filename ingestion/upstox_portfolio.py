@@ -122,6 +122,15 @@ def _enrich_with_quotes(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         unrealised_pnl_pct = (
             round((current_price - avg_price) / avg_price * 100, 4) if avg_price else 0.0
         )
+        # For US holdings expose an INR-converted P&L using the live rate so
+        # downstream consumers (Telegram formatters, weekly recap) can render
+        # ₹ totals without each one re-fetching the rate.
+        if market == "US":
+            unrealised_pnl_inr = round(unrealised_pnl * config.USD_INR_RATE, 2)
+            current_value_inr = round(current_value * config.USD_INR_RATE, 2)
+        else:
+            unrealised_pnl_inr = unrealised_pnl
+            current_value_inr = current_value
         enriched.append({
             "trading_symbol": ticker,
             "instrument_token": config.instrument_key_for(ticker) if market == "IND" else None,
@@ -135,8 +144,10 @@ def _enrich_with_quotes(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "currency": currency,
             "current_price": current_price,
             "current_value": current_value,
+            "current_value_inr": current_value_inr,
             "cost_value": round(cost, 2),
             "unrealised_pnl": unrealised_pnl,
+            "unrealised_pnl_inr": unrealised_pnl_inr,
             "unrealised_pnl_pct": unrealised_pnl_pct,
             "quote_source": q.get("source"),
             "is_active": bool(r.get("is_active", True)),

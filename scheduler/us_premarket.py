@@ -199,7 +199,7 @@ def format_us_advisory(
         "🌐 <b>US Portfolio Advisory — 7:30 PM IST</b>",
         f"S&amp;P 500: {sp.get('last','—')} ({(sp.get('change_pct') or 0):+.2f}%) | "
         f"Nasdaq: {nq.get('last','—')} ({(nq.get('change_pct') or 0):+.2f}%)",
-        f"VIX: {vix.get('last','—')} | USD/INR: ₹{usdinr.get('last','—')} | "
+        f"VIX: {vix.get('last','—')} | USD/INR: ₹{config.USD_INR_RATE} (live) | "
         f"10Y: {tnx.get('last','—')}%",
         "",
     ]
@@ -232,7 +232,7 @@ def format_us_advisory(
     total_usd_value = sum(b["current_price_usd"] * b["qty"] for b in blocks_by_ticker.values())
     total_usd_cost = sum(b["avg_price_usd"] * b["qty"] for b in blocks_by_ticker.values())
     total_usd_pnl = total_usd_value - total_usd_cost
-    usd_inr_rate = (usdinr.get("last") or config.USD_TO_INR) or 83.5
+    usd_inr_rate = config.USD_INR_RATE or (usdinr.get("last") or 95.31)
     total_inr_value = total_usd_value * usd_inr_rate
     total_inr_pnl = total_usd_pnl * usd_inr_rate
     pnl_pct = (total_usd_pnl / total_usd_cost * 100) if total_usd_cost else 0.0
@@ -280,7 +280,10 @@ def run() -> dict[str, Any]:
         return {"holdings": 0, "messages": 0}
 
     macro = build_us_macro()
-    usd_inr = (macro.get("usd_inr") or {}).get("last") or config.USD_TO_INR or 83.5
+    # Prefer the centrally-cached config rate (fetched once at process start)
+    # over the per-run yfinance call — they're the same source so the values
+    # match, but config.USD_INR_RATE is the single source of truth.
+    usd_inr = config.USD_INR_RATE or (macro.get("usd_inr") or {}).get("last") or 95.31
 
     blocks: list[dict[str, Any]] = []
     for h in us_holdings:
