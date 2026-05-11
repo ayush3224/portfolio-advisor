@@ -42,7 +42,10 @@ def _utcnow_iso() -> str:
 # ---------------------------------------------------------------------------
 
 def insert_portfolio_snapshot(snapshot: dict[str, Any]) -> str | None:
-    """Insert a portfolio snapshot row. Returns row id, or None in DRY_RUN."""
+    """Insert a portfolio snapshot row. Returns row id, None on DRY_RUN or failure.
+
+    Pipeline must treat None as fatal — caller decides whether to abort.
+    """
     if config.DRY_RUN:
         log.info("[DRY_RUN] insert_portfolio_snapshot skipped")
         return None
@@ -59,8 +62,19 @@ def insert_portfolio_snapshot(snapshot: dict[str, Any]) -> str | None:
         "used_margin": snapshot.get("used_margin"),
         "realised_pnl_today": snapshot.get("realised_pnl_today"),
         "sector_allocation_json": snapshot.get("sector_allocation"),
+        "project": config.PROJECT_NAME,
     }
-    res = client.table("portfolio_snapshots").insert(payload).execute()
+    try:
+        res = client.table("portfolio_snapshots").insert(payload).execute()
+    except Exception as exc:
+        # Older portfolio_snapshots tables may not have the `project` column.
+        log.warning("portfolio_snapshots insert with project failed (%s) — retrying without", exc)
+        payload.pop("project", None)
+        try:
+            res = client.table("portfolio_snapshots").insert(payload).execute()
+        except Exception as exc2:
+            log.error("insert_portfolio_snapshot failed: %s", exc2)
+            return None
     return res.data[0]["id"] if res.data else None
 
 

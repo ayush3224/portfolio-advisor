@@ -77,50 +77,53 @@ def _sector_allocation(holdings: list[dict[str, Any]]) -> dict[str, float]:
 def get_portfolio_snapshot(run_type: str, *, use_cache: bool = True) -> dict[str, Any]:
     """Fetch a fresh portfolio snapshot, or return the cached one if fresh.
 
-    Persists the snapshot to portfolio_snapshots (unless DRY_RUN).
-    Returns mock data when PAPER_TRADING=true or USE_MOCK_PORTFOLIO=true.
+    Persists the snapshot to portfolio_snapshots (unless DRY_RUN), including
+    in paper-trading / mock-portfolio modes — so advisor_recommendations always
+    has a real UUID to reference.
     """
     if config.PAPER_TRADING:
         from tests.mock_portfolio import get_mock_snapshot
         log.info("PAPER TRADING MODE — using mock portfolio")
-        return get_mock_snapshot(run_type)
-    if config.USE_MOCK_PORTFOLIO:
+        snapshot = get_mock_snapshot(run_type)
+    elif config.USE_MOCK_PORTFOLIO:
         from tests.mock_portfolio import get_mock_snapshot
         log.info("USE_MOCK_PORTFOLIO=true — returning mock snapshot")
-        return get_mock_snapshot(run_type)
-    if use_cache:
-        cached = supabase_client.get_cached_portfolio()
-        if cached:
-            log.info("Using cached portfolio snapshot from %s", cached.get("snapshot_time"))
-            return {
-                "id": cached["id"],
-                "run_type": cached["run_type"],
-                "holdings": cached["holdings_json"] or [],
-                "positions": cached["positions_json"] or [],
-                "total_value": cached.get("total_value"),
-                "available_margin": cached.get("available_margin"),
-                "used_margin": cached.get("used_margin"),
-                "realised_pnl_today": cached.get("realised_pnl_today"),
-                "sector_allocation": cached.get("sector_allocation_json") or {},
-            }
+        snapshot = get_mock_snapshot(run_type)
+    else:
+        if use_cache:
+            cached = supabase_client.get_cached_portfolio()
+            if cached:
+                log.info("Using cached portfolio snapshot from %s", cached.get("snapshot_time"))
+                return {
+                    "id": cached["id"],
+                    "run_type": cached["run_type"],
+                    "holdings": cached["holdings_json"] or [],
+                    "positions": cached["positions_json"] or [],
+                    "total_value": cached.get("total_value"),
+                    "available_margin": cached.get("available_margin"),
+                    "used_margin": cached.get("used_margin"),
+                    "realised_pnl_today": cached.get("realised_pnl_today"),
+                    "sector_allocation": cached.get("sector_allocation_json") or {},
+                }
 
-    holdings = fetch_holdings()
-    positions = fetch_positions()
-    funds = fetch_funds_and_margin()
+        holdings = fetch_holdings()
+        positions = fetch_positions()
+        funds = fetch_funds_and_margin()
 
-    total_value = sum(
-        float(h.get("last_price", 0)) * float(h.get("quantity", 0)) for h in holdings
-    )
-    snapshot = {
-        "run_type": run_type,
-        "holdings": holdings,
-        "positions": positions,
-        "total_value": total_value,
-        "available_margin": funds.get("available_margin"),
-        "used_margin": funds.get("used_margin"),
-        "realised_pnl_today": funds.get("realised_pnl_today"),
-        "sector_allocation": _sector_allocation(holdings),
-    }
+        total_value = sum(
+            float(h.get("last_price", 0)) * float(h.get("quantity", 0)) for h in holdings
+        )
+        snapshot = {
+            "run_type": run_type,
+            "holdings": holdings,
+            "positions": positions,
+            "total_value": total_value,
+            "available_margin": funds.get("available_margin"),
+            "used_margin": funds.get("used_margin"),
+            "realised_pnl_today": funds.get("realised_pnl_today"),
+            "sector_allocation": _sector_allocation(holdings),
+        }
+
     snapshot_id = supabase_client.insert_portfolio_snapshot(snapshot)
     if snapshot_id:
         snapshot["id"] = snapshot_id

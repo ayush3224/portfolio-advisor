@@ -42,6 +42,16 @@ def _attach_sizing(rec: dict[str, Any]) -> dict[str, Any] | None:
 
 def run() -> dict[str, Any]:
     snapshot = upstox_portfolio.get_portfolio_snapshot("premarket")
+    snapshot_id = snapshot.get("id")
+    if not snapshot_id and not config.DRY_RUN:
+        msg = "premarket aborted — portfolio_snapshot persist failed (no UUID returned)"
+        log.error(msg)
+        try:
+            telegram_bot.send_alert("⚠️ " + msg)
+        except Exception:
+            log.exception("failed to send abort alert")
+        return {"recommendations": [], "rejected": [], "skipped": [], "aborted": True}
+
     context = portfolio_context.build_full_context(snapshot)
     macro = market_context.get_market_context()
 
@@ -79,7 +89,6 @@ def run() -> dict[str, Any]:
         sector_allocation=context.get("sector_allocation") or {},
     )
 
-    snapshot_id = snapshot.get("id")
     persisted: list[dict[str, Any]] = []
     for rec in passing:
         try:

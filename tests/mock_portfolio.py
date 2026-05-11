@@ -71,7 +71,6 @@ def get_mock_snapshot(run_type: str = "premarket") -> dict:
     holdings = [dict(h) for h in _HOLDINGS]
     total_value = sum(h["last_price"] * h["quantity"] for h in holdings)
     return {
-        "id": "mock-snapshot-id",
         "run_type": run_type,
         "holdings": holdings,
         "positions": [],
