@@ -1,0 +1,18 @@
+[Unit]
+Description=Portfolio Advisor Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/portfolio-advisor
+Environment=PYTHONPATH=/root/portfolio-advisor
+ExecStart=/usr/bin/python3 /root/portfolio-advisor/scheduler/bot_runner.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/root/portfolio-advisor/logs/bot.log
+StandardError=append:/root/portfolio-advisor/logs/bot.log
+
+[Install]
+WantedBy=multi-user.target

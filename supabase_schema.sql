@@ -97,6 +97,40 @@ create table if not exists backtest_results (
 create index if not exists idx_backtest_run_date on backtest_results (run_date desc);
 create index if not exists idx_backtest_ticker on backtest_results (ticker);
 
+-- 7. Holdings (user-managed positions; source of truth for the portfolio)
+create table if not exists holdings (
+    id                  uuid primary key default gen_random_uuid(),
+    ticker              varchar(20) not null unique,
+    exchange            varchar(10) default 'NSE',
+    quantity            integer not null check (quantity > 0),
+    average_price       numeric(12, 4) not null,
+    current_price       numeric(12, 4),
+    current_value       numeric(12, 4),
+    unrealised_pnl      numeric(12, 4),
+    unrealised_pnl_pct  numeric(8, 4),
+    date_added          timestamptz default now(),
+    last_updated        timestamptz default now(),
+    is_active           boolean default true,
+    notes               text
+);
+create index if not exists idx_holdings_ticker on holdings(ticker);
+create index if not exists idx_holdings_active on holdings(is_active);
+
+-- 8. Transactions (immutable BUY/SELL log; drives realised P&L)
+create table if not exists transactions (
+    id                  uuid primary key default gen_random_uuid(),
+    ticker              varchar(20) not null,
+    action              varchar(10) not null check (action in ('BUY','SELL')),
+    quantity            integer not null check (quantity > 0),
+    price               numeric(12, 4) not null,
+    total_value         numeric(12, 4),
+    realised_pnl        numeric(12, 4),
+    avg_price_at_trade  numeric(12, 4),
+    executed_at         timestamptz default now(),
+    notes               text
+);
+create index if not exists idx_transactions_ticker on transactions(ticker);
+
 -- 6. Run log (every scheduler invocation — for cost & error tracking)
 create table if not exists run_log (
     id                      uuid primary key default gen_random_uuid(),
