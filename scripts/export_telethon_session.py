@@ -4,8 +4,8 @@ Usage:
     python scripts/export_telethon_session.py [path/to/session]
 
 Default session path: $TELETHON_SESSION_FILE (falls back to
-/root/stocksage/stocksage_session). Telethon expects the path WITHOUT the
-.session suffix.
+/root/portfolio-advisor/portfolio_advisor_session). Telethon expects the
+path WITHOUT the .session suffix.
 
 After running, copy the printed string into .env as:
     TELETHON_SESSION_STRING=<paste here>

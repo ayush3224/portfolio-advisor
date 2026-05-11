@@ -116,8 +116,8 @@ TELEGRAM_CHANNELS: dict[str, int] = {
 # Optional persistent string-session (preferred for headless VPS cron).
 # Generate once via: python scripts/export_telethon_session.py
 TELETHON_SESSION_STRING = _get("TELETHON_SESSION_STRING")
-# File-based fallback (existing StockSage session is reused by default)
-TELETHON_SESSION_FILE = _get("TELETHON_SESSION_FILE", "/root/stocksage/stocksage_session")
+# File-based fallback — portfolio-advisor session file.
+TELETHON_SESSION_FILE = _get("TELETHON_SESSION_FILE", "/root/portfolio-advisor/portfolio_advisor_session")
 
 
 # --- NSE instrument key map (NSE_EQ|<ISIN>) ---

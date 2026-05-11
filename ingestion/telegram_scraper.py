@@ -62,8 +62,8 @@ def _build_client() -> Any | None:
 
     Preference order (per CLAUDE.md ops requirement — VPS cron must be headless):
       1. TELETHON_SESSION_STRING env var → StringSession
-      2. TELETHON_SESSION_FILE path     → file-based session (default reuses
-         /root/stocksage/stocksage_session)
+      2. TELETHON_SESSION_FILE path     → file-based session (default:
+         /root/portfolio-advisor/portfolio_advisor_session)
     """
     if TelegramClient is None or not all([config.TELETHON_API_ID, config.TELETHON_API_HASH]):
         log.warning("Telethon not configured — skipping channel scrape")
