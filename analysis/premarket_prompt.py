@@ -62,14 +62,33 @@ considered but discarded:
 ]
 Confidence is an integer 1-10. Use lower confidence and HOLD freely; do not
 manufacture trades. If a ticker has no edge, give it a low confidence and
-"skipped": true — never omit it from the array."""
+"skipped": true — never omit it from the array.
+
+PREDICTION MARKET SIGNALS show crowd-sourced probability of macro events
+(RBI rate decisions, oil price ranges, geopolitical risk). Use these to:
+  - Adjust conviction on rate-sensitive stocks (banks, NBFCs) based on RBI
+    cut probability
+  - Flag geopolitical risk on relevant sectors
+  - Incorporate oil price probabilities for energy stocks and import-heavy
+    sectors (oil PSUs, aviation, paints)
+These are market consensus signals — weight them alongside but not above
+technical signals."""
 
 
 def build_user_prompt(context: dict[str, Any], market_context: dict[str, Any]) -> str:
     """Render the per-run user message: market context + per-holding blocks."""
+    # Separate the Polymarket block from the JSON dump so the model sees it as
+    # a clean text section, not buried inside a long JSON blob.
+    poly_text = market_context.pop("polymarket_text", "") if isinstance(market_context, dict) else ""
+    market_context.pop("polymarket", None)
+
     parts = [
         "## Market context",
         json.dumps(market_context, default=str, indent=2),
+    ]
+    if poly_text:
+        parts += ["", "## " + poly_text]
+    parts += [
         "",
         f"## Portfolio summary",
         f"Total value: ₹{context.get('total_value') or 0:,.0f}",

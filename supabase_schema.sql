@@ -102,7 +102,9 @@ create table if not exists holdings (
     id                  uuid primary key default gen_random_uuid(),
     ticker              varchar(20) not null unique,
     exchange            varchar(10) default 'NSE',
-    quantity            integer not null check (quantity > 0),
+    market              varchar(5)  default 'IND' check (market in ('IND','US')),
+    currency            varchar(5)  default 'INR',
+    quantity            numeric(14, 4) not null check (quantity > 0),
     average_price       numeric(12, 4) not null,
     current_price       numeric(12, 4),
     current_value       numeric(12, 4),
@@ -113,15 +115,19 @@ create table if not exists holdings (
     is_active           boolean default true,
     notes               text
 );
+-- Idempotent: existing deployments only have `ticker` so far.
+alter table holdings add column if not exists market   varchar(5) default 'IND';
+alter table holdings add column if not exists currency varchar(5) default 'INR';
 create index if not exists idx_holdings_ticker on holdings(ticker);
 create index if not exists idx_holdings_active on holdings(is_active);
+create index if not exists idx_holdings_market on holdings(market);
 
 -- 8. Transactions (immutable BUY/SELL log; drives realised P&L)
 create table if not exists transactions (
     id                  uuid primary key default gen_random_uuid(),
     ticker              varchar(20) not null,
     action              varchar(10) not null check (action in ('BUY','SELL')),
-    quantity            integer not null check (quantity > 0),
+    quantity            numeric(14, 4) not null check (quantity > 0),
     price               numeric(12, 4) not null,
     total_value         numeric(12, 4),
     realised_pnl        numeric(12, 4),

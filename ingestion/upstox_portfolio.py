@@ -75,24 +75,46 @@ def _read_active_holdings() -> list[dict[str, Any]]:
 
 
 def _enrich_with_quotes(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Attach live LTP to each holding row via upstox_market_data (batched).
-    Falls through to yfinance if Upstox is unavailable. Per-ticker exceptions
-    never crash the pipeline."""
+    """Attach live LTP to each holding row via upstox_market_data (batched
+    for IND tickers). US tickers fall through to yfinance. Per-ticker
+    exceptions never crash the pipeline."""
     if not rows:
         return []
-    tickers = [r["ticker"] for r in rows if r.get("ticker")]
-    quotes: dict[str, dict[str, Any]] = {}
-    try:
-        quotes = _run_async(upstox_market_data.get_live_quotes(tickers))
-    except Exception as exc:
-        log.warning("batch quote fetch failed (%s) — using avg_price fallback", exc)
+
+    ind_tickers = [r["ticker"] for r in rows if (r.get("market") or "IND") == "IND" and r.get("ticker")]
+    us_rows = [r for r in rows if (r.get("market") or "IND") == "US"]
+
+    ind_quotes: dict[str, dict[str, Any]] = {}
+    if ind_tickers:
+        try:
+            ind_quotes = _run_async(upstox_market_data.get_live_quotes(ind_tickers))
+        except Exception as exc:
+            log.warning("batch quote (IND) failed (%s) — using avg_price fallback", exc)
+
+    us_quotes: dict[str, dict[str, Any]] = {}
+    if us_rows:
+        import yfinance as yf  # local import — kept out of the hot path for IND-only runs
+        for r in us_rows:
+            t = r["ticker"]
+            yf_sym = t.replace(".", "-").upper()
+            try:
+                hist = yf.Ticker(yf_sym).history(period="2d", auto_adjust=False)
+                if hist is not None and not hist.empty:
+                    us_quotes[t] = {
+                        "ltp": float(hist["Close"].iloc[-1]),
+                        "source": "yfinance",
+                    }
+            except Exception as exc:
+                log.warning("yfinance quote for %s failed: %s", t, exc)
 
     enriched: list[dict[str, Any]] = []
     for r in rows:
         ticker = r["ticker"]
-        qty = int(r["quantity"])
+        qty = float(r["quantity"])
         avg_price = float(r["average_price"])
-        q = quotes.get(ticker) or {}
+        market = (r.get("market") or "IND").upper()
+        currency = r.get("currency") or ("USD" if market == "US" else "INR")
+        q = (us_quotes if market == "US" else ind_quotes).get(ticker) or {}
         current_price = float(q.get("ltp") or avg_price)
         current_value = round(qty * current_price, 2)
         cost = qty * avg_price
@@ -101,16 +123,16 @@ def _enrich_with_quotes(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             round((current_price - avg_price) / avg_price * 100, 4) if avg_price else 0.0
         )
         enriched.append({
-            # Fields consumed by processing/portfolio_context.build_holding_block
             "trading_symbol": ticker,
-            "instrument_token": config.instrument_key_for(ticker),
+            "instrument_token": config.instrument_key_for(ticker) if market == "IND" else None,
             "quantity": qty,
             "average_price": avg_price,
             "last_price": current_price,
-            "instrument_sector": r.get("notes") or None,  # sector not tracked yet
-            # Convenience fields for bot replies / dashboards
+            "instrument_sector": r.get("notes") or None,
             "ticker": ticker,
-            "exchange": r.get("exchange") or "NSE",
+            "exchange": r.get("exchange") or ("NSE" if market == "IND" else "US"),
+            "market": market,
+            "currency": currency,
             "current_price": current_price,
             "current_value": current_value,
             "cost_value": round(cost, 2),
@@ -125,11 +147,18 @@ def _enrich_with_quotes(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return enriched
 
 
-def fetch_portfolio() -> dict[str, Any]:
-    """Read active holdings from Supabase, enrich with live prices, compute totals."""
+def fetch_portfolio(market: str | None = None) -> dict[str, Any]:
+    """Read active holdings from Supabase, enrich with live prices, compute totals.
+
+    `market`: optional filter — 'IND' or 'US' — for callers that want only one
+    region (e.g. the IND premarket scheduler ignores US holdings).
+    """
     rows = _read_active_holdings()
+    if market:
+        market_u = market.upper()
+        rows = [r for r in rows if (r.get("market") or "IND").upper() == market_u]
     if not rows:
-        log.warning("No holdings in database. Add positions via Telegram bot.")
+        log.warning("No holdings in database (market=%s). Add positions via Telegram bot.", market or "ALL")
         return _empty_portfolio()
 
     enriched = _enrich_with_quotes(rows)

@@ -93,6 +93,20 @@ def _format_sell(reply: dict[str, Any]) -> str:
     return body
 
 
+def _format_section(rows: list[dict[str, Any]], *, title: str, curr_sym: str) -> list[str]:
+    out = [f"<b>{title}</b>"]
+    for h in rows:
+        marker = _pnl_marker(h["unrealised_pnl"])
+        qty_str = f"{h['quantity']:g}"
+        out.append(
+            f"<b>{h['ticker']:<10}</b> {qty_str}sh  "
+            f"{curr_sym}{h['average_price']:,.2f}→{curr_sym}{h['current_price']:,.2f}  "
+            f"{('+' if h['unrealised_pnl'] >= 0 else '-')}{curr_sym}{abs(h['unrealised_pnl']):,.2f}  "
+            f"{h['unrealised_pnl_pct']:+.2f}% {marker}"
+        )
+    return out
+
+
 def _format_portfolio(p: dict[str, Any]) -> str:
     holdings = p.get("holdings") or []
     if not holdings:
@@ -101,22 +115,38 @@ def _format_portfolio(p: dict[str, Any]) -> str:
             f"{_RULE}\n"
             "<i>No active holdings. Send BUY &lt;TICKER&gt; &lt;QTY&gt; &lt;PRICE&gt; to add one.</i>"
         )
-    lines = [f"📊 <b>Your Portfolio</b>", _RULE]
-    for h in holdings:
-        marker = _pnl_marker(h["unrealised_pnl"])
+    ind = [h for h in holdings if (h.get("market") or "IND").upper() == "IND"]
+    us = [h for h in holdings if (h.get("market") or "").upper() == "US"]
+
+    lines = ["📊 <b>Your Portfolio</b>", _RULE]
+    if ind:
+        lines.extend(_format_section(ind, title="🇮🇳 Indian Holdings", curr_sym="₹"))
+        ind_value = sum(h["current_value"] for h in ind)
+        ind_cost = sum(h["cost_value"] for h in ind)
+        ind_pnl = ind_value - ind_cost
+        ind_pct = (ind_pnl / ind_cost * 100) if ind_cost else 0.0
         lines.append(
-            f"<b>{h['ticker']:<10}</b> {h['quantity']}sh  "
-            f"₹{h['average_price']:,.2f}→₹{h['current_price']:,.2f}  "
-            f"{_fmt_rs(h['unrealised_pnl'], with_sign=True)}  "
-            f"{h['unrealised_pnl_pct']:+.2f}% {marker}"
+            f"  Subtotal: {_fmt_rs(ind_value)} | P&amp;L {_fmt_rs(ind_pnl, with_sign=True)} ({ind_pct:+.2f}%)"
         )
+    if us:
+        if ind:
+            lines.append("")
+        lines.extend(_format_section(us, title="🇺🇸 US Holdings", curr_sym="$"))
+        us_value = sum(h["current_value"] for h in us)
+        us_cost = sum(h["cost_value"] for h in us)
+        us_pnl = us_value - us_cost
+        us_pct = (us_pnl / us_cost * 100) if us_cost else 0.0
+        lines.append(
+            f"  Subtotal: ${us_value:,.2f} | P&amp;L {('+' if us_pnl>=0 else '-')}${abs(us_pnl):,.2f} ({us_pct:+.2f}%)"
+        )
+
     lines.append(_RULE)
-    lines.append(f"Total:     {_fmt_rs(p['total_value'])}")
+    lines.append(f"Combined:  {_fmt_rs(p['total_value'])} (IND ₹ + US $)")
     lines.append(
         f"P&amp;L:       {_fmt_rs(p['total_pnl'], with_sign=True)} "
         f"({p['total_pnl_pct']:+.2f}%) {_pnl_marker(p['total_pnl'])}"
     )
-    lines.append(f"Holdings:  {len(holdings)} stocks")
+    lines.append(f"Holdings:  {len(ind)} Indian | {len(us)} US")
     return "\n".join(lines)
 
 
@@ -212,7 +242,7 @@ _HELP = (
 # ---------------------------------------------------------------------------
 
 _TRADE_RE = re.compile(
-    r"^(BUY|SELL)\s+([A-Z0-9&\-]+)\s+(\d+)(?:\s+([\d.]+))?\s*$",
+    r"^(BUY|SELL)(?:-(IND|US))?\s+([A-Z0-9&\-\.]+)\s+([\d.]+)(?:\s+([\d.]+))?\s*$",
     re.IGNORECASE,
 )
 _QUOTE_RE = re.compile(r"^(QUOTE|Q)\s+([A-Z0-9&\-]+)\s*$", re.IGNORECASE)
@@ -235,16 +265,17 @@ async def process(text: str) -> str:
 
     m = _TRADE_RE.match(text)
     if m:
-        action, ticker, qty_s, price_s = m.groups()
+        action, market, ticker, qty_s, price_s = m.groups()
         if not price_s:
             return f"❌ Price required: {action.upper()} {ticker.upper()} {qty_s} &lt;PRICE&gt;"
         try:
-            qty = int(qty_s)
+            qty = float(qty_s)
             price = float(price_s)
         except ValueError:
             return "❌ Invalid number in command. Send HELP for examples."
+        market_u = market.upper() if market else None
         if action.upper() == "BUY":
-            res = await portfolio_manager.add_position(ticker, qty, price)
+            res = await portfolio_manager.add_position(ticker, qty, price, market=market_u)
             if not res.get("success"):
                 return f"❌ {res.get('error', 'BUY failed')}"
             return _format_buy(res)

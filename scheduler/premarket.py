@@ -13,13 +13,15 @@ Pipeline:
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import logging
 from typing import Any
 
 import config
 from analysis import premarket_prompt
 from delivery import telegram_bot
-from ingestion import market_context, upstox_portfolio
+from ingestion import market_context, polymarket, upstox_portfolio
 from processing import portfolio_context, position_sizer, risk_guardrails
 from storage import supabase_client
 
@@ -42,6 +44,11 @@ def _attach_sizing(rec: dict[str, Any]) -> dict[str, Any] | None:
 
 def run() -> dict[str, Any]:
     snapshot = upstox_portfolio.get_portfolio_snapshot("premarket")
+    # IND premarket only — strip US holdings so they don't enter the Sonnet prompt.
+    snapshot["holdings"] = [
+        h for h in (snapshot.get("holdings") or [])
+        if (h.get("market") or "IND").upper() == "IND"
+    ]
     snapshot_id = snapshot.get("id")
     if not snapshot_id and not config.DRY_RUN:
         msg = "premarket aborted — portfolio_snapshot persist failed (no UUID returned)"
@@ -54,6 +61,23 @@ def run() -> dict[str, Any]:
 
     context = portfolio_context.build_full_context(snapshot)
     macro = market_context.get_market_context()
+
+    # Polymarket prediction-market signals — best-effort enrichment of `macro`.
+    # Any network failure inside polymarket returns [] and is logged there.
+    try:
+        try:
+            asyncio.get_running_loop()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                poly_markets = ex.submit(
+                    asyncio.run, polymarket.fetch_relevant_markets("india")
+                ).result()
+        except RuntimeError:
+            poly_markets = asyncio.run(polymarket.fetch_relevant_markets("india"))
+    except Exception as exc:
+        log.warning("Polymarket fetch failed: %s", exc)
+        poly_markets = []
+    macro["polymarket"] = poly_markets
+    macro["polymarket_text"] = polymarket.format_for_prompt(poly_markets)
 
     result = premarket_prompt.run(context, macro)
     raw_recs = result.get("recommendations") or []

@@ -16,14 +16,67 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
+import yfinance as yf
+
+import config
 from ingestion import upstox_market_data, upstox_portfolio
 from storage import supabase_client
 
 log = logging.getLogger(__name__)
 
 
+# Common US tickers we recognise without an explicit market flag.
+# Adding to this list is cheap; the source of truth is still the `market`
+# column stored on each holding row.
+_KNOWN_US_TICKERS = {
+    "AAPL", "MSFT", "AMZN", "GOOG", "GOOGL", "META", "NVDA", "TSLA",
+    "NFLX", "AMD", "INTC", "IBM", "ORCL", "CRM", "ADBE", "PEP", "KO",
+    "WMT", "JPM", "BAC", "GS", "MS", "C", "BRK.A", "BRK.B", "BRK-B",
+    "V", "MA", "DIS", "HD", "MCD", "NKE", "XOM", "CVX", "BP", "BKR",
+    "DUK", "PLTR", "PANW", "SOXX", "EQIX", "RTX", "TSM", "PSI",
+    "IBKR", "IAU", "GLD", "SLV", "AAAU",
+}
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def detect_market(ticker: str) -> str:
+    """Heuristic: ticker maps to NSE if in INSTRUMENT_KEYS, else US if known,
+    else best-guess by name length (NSE symbols are usually ≤10 chars). For
+    ambiguity, callers should pass an explicit market via BUY-US."""
+    t = ticker.upper().strip()
+    if config.instrument_key_for(t):
+        return "IND"
+    if t in _KNOWN_US_TICKERS:
+        return "US"
+    return "IND"  # safest default — most users hold Indian stocks
+
+
+def _yf_quote_for_ticker(ticker: str) -> dict[str, Any] | None:
+    """Quote for a US ticker via yfinance (no .NS suffix).
+    Berkshire's BRK.B is served as BRK-B on Yahoo — normalise dots to hyphens."""
+    try:
+        t = yf.Ticker(ticker.upper().replace(".", "-"))
+        hist = t.history(period="2d", auto_adjust=False)
+        if hist is None or hist.empty:
+            return None
+        last = hist.iloc[-1]
+        prev_close = float(hist["Close"].iloc[-2]) if len(hist) >= 2 else None
+        return {
+            "ticker": ticker.upper(),
+            "ltp": round(float(last["Close"]), 2),
+            "prev_close": prev_close,
+            "open": round(float(last["Open"]), 2),
+            "high": round(float(last["High"]), 2),
+            "low": round(float(last["Low"]), 2),
+            "volume": int(last["Volume"]) if last["Volume"] else None,
+            "source": "yfinance",
+        }
+    except Exception as exc:
+        log.warning("yfinance US quote for %s failed: %s", ticker, exc)
+        return None
 
 
 def _fetch_existing(ticker: str) -> dict[str, Any] | None:
@@ -52,7 +105,9 @@ def _insert_transaction(payload: dict[str, Any]) -> None:
         log.exception("transaction insert failed: %s", exc)
 
 
-async def add_position(ticker: str, quantity: int, price: float) -> dict[str, Any]:
+async def add_position(
+    ticker: str, quantity: float, price: float, *, market: str | None = None,
+) -> dict[str, Any]:
     ticker = ticker.upper().strip()
     if quantity <= 0 or price <= 0:
         return {"success": False, "error": "quantity and price must be positive"}
@@ -61,9 +116,14 @@ async def add_position(ticker: str, quantity: int, price: float) -> dict[str, An
     if client is None:
         return {"success": False, "error": "Database unavailable"}
 
+    resolved_market = (market or detect_market(ticker)).upper()
+    if resolved_market not in ("IND", "US"):
+        return {"success": False, "error": f"unknown market {resolved_market!r}"}
+    currency = "USD" if resolved_market == "US" else "INR"
+
     existing = _fetch_existing(ticker)
     if existing:
-        old_qty = int(existing["quantity"])
+        old_qty = float(existing["quantity"])
         old_avg = float(existing["average_price"])
         new_qty = old_qty + quantity
         new_avg = round((old_qty * old_avg + quantity * price) / new_qty, 4)
@@ -83,6 +143,8 @@ async def add_position(ticker: str, quantity: int, price: float) -> dict[str, An
                 "ticker": ticker,
                 "quantity": quantity,
                 "average_price": new_avg,
+                "market": resolved_market,
+                "currency": currency,
                 "is_active": True,
             }).execute()
         except Exception as exc:
@@ -97,7 +159,10 @@ async def add_position(ticker: str, quantity: int, price: float) -> dict[str, An
         "avg_price_at_trade": new_avg,
     })
 
-    quote = await upstox_market_data.get_live_quote(ticker)
+    if resolved_market == "IND":
+        quote = await upstox_market_data.get_live_quote(ticker)
+    else:
+        quote = _yf_quote_for_ticker(ticker)
     live_price = float(quote["ltp"]) if quote and quote.get("ltp") else new_avg
     unrealised = round((live_price - new_avg) * new_qty, 2)
     unrealised_pct = round((live_price - new_avg) / new_avg * 100, 4) if new_avg else 0.0
@@ -106,6 +171,8 @@ async def add_position(ticker: str, quantity: int, price: float) -> dict[str, An
         "success": True,
         "ticker": ticker,
         "action": "BUY",
+        "market": resolved_market,
+        "currency": currency,
         "quantity_added": quantity,
         "total_quantity": new_qty,
         "average_price": new_avg,
@@ -118,7 +185,7 @@ async def add_position(ticker: str, quantity: int, price: float) -> dict[str, An
     }
 
 
-async def close_position(ticker: str, quantity: int, price: float) -> dict[str, Any]:
+async def close_position(ticker: str, quantity: float, price: float) -> dict[str, Any]:
     ticker = ticker.upper().strip()
     if quantity <= 0 or price <= 0:
         return {"success": False, "error": "quantity and price must be positive"}
@@ -127,7 +194,7 @@ async def close_position(ticker: str, quantity: int, price: float) -> dict[str, 
     if not existing:
         return {"success": False, "error": f"No holding found for {ticker}"}
 
-    held_qty = int(existing["quantity"])
+    held_qty = float(existing["quantity"])
     if quantity > held_qty:
         return {
             "success": False,
@@ -172,7 +239,11 @@ async def close_position(ticker: str, quantity: int, price: float) -> dict[str, 
         "avg_price_at_trade": round(avg_price, 4),
     })
 
-    quote = await upstox_market_data.get_live_quote(ticker)
+    market_v = (existing.get("market") or detect_market(ticker)).upper()
+    if market_v == "IND":
+        quote = await upstox_market_data.get_live_quote(ticker)
+    else:
+        quote = _yf_quote_for_ticker(ticker)
     live_price = float(quote["ltp"]) if quote and quote.get("ltp") else price
 
     return {
@@ -197,6 +268,8 @@ def get_portfolio() -> dict[str, Any]:
 
 async def get_quote(ticker: str) -> dict[str, Any] | None:
     ticker = ticker.upper().strip()
+    if detect_market(ticker) == "US":
+        return _yf_quote_for_ticker(ticker)
     return await upstox_market_data.get_live_quote(ticker)
 
 
