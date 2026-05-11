@@ -5,7 +5,7 @@ import os
 
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv("/root/portfolio-advisor/.env")
 
 log = logging.getLogger(__name__)
 
@@ -93,6 +93,7 @@ TELEGRAM_CHANNELS: dict[str, int] = {
     "ICICIdirectMARKETSstocks": 3,
     "Equity99Official_Equity_999": 3,
     "equity99": 3,
+    "nooreshtech": 3,
     "STOCKGAINERSS": 2,
     "aakankshatrading": 1,
     "rawattraderss": 1,

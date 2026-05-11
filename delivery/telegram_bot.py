@@ -301,6 +301,46 @@ def format_eod_summary(date_str: str, usage: dict[str, Any], perf: dict[str, Any
     return "\n".join(lines)
 
 
+def format_weekly_review(s: dict[str, Any]) -> str:
+    """Sunday recap — recommendations + outcomes for the trailing 7 days."""
+    by_action = s.get("by_action") or {}
+    lines = [
+        "<b>📅 Weekly Review</b>",
+        f"<i>{s.get('start')} → {s.get('end')}</i>",
+        "",
+        "<b>Recommendations</b>",
+        f"  Total: {s.get('recs_total', 0)} "
+        f"(executed {s.get('executed', 0)} · paper {s.get('paper', 0)})",
+    ]
+    if by_action:
+        action_summary = " · ".join(f"{a} {n}" for a, n in sorted(by_action.items()))
+        lines.append(f"  Actions: {action_summary}")
+    lines.append("")
+    lines.append("<b>Outcomes</b>")
+    if not s.get("trades"):
+        lines.append("  No closed trades this week.")
+    else:
+        lines.append(
+            f"  Trades: {s.get('trades', 0)} · "
+            f"Wins: {s.get('wins', 0)} · Losses: {s.get('losses', 0)}"
+        )
+        lines.append(f"  Win rate: {s.get('win_rate', 0):.1%}")
+        lines.append(f"  Net P&L: {_fmt_signed_inr(s.get('total_pnl'))}")
+        if s.get("avg_alpha") is not None:
+            lines.append(f"  Avg alpha vs Nifty: {s['avg_alpha']:+.2f}%")
+        if s.get("best"):
+            b = s["best"]
+            lines.append(
+                f"  🏆 Best: {b.get('ticker')} {_fmt_signed_inr(b.get('actual_pnl_inr'))}"
+            )
+        if s.get("worst"):
+            w = s["worst"]
+            lines.append(
+                f"  💥 Worst: {w.get('ticker')} {_fmt_signed_inr(w.get('actual_pnl_inr'))}"
+            )
+    return "\n".join(lines)
+
+
 def format_weekly_scorecard(summary: dict[str, Any]) -> str:
     return (
         "<b>📅 Weekly scorecard</b>\n\n"

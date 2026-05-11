@@ -11,3 +11,5 @@ feedparser
 beautifulsoup4
 pytz
 schedule
+yfinance
+httpx

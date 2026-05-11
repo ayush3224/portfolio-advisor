@@ -95,9 +95,45 @@ async def _gather_messages(channels: dict[str, int], since: datetime, limit: int
         await client.disconnect()
 
 
+async def _join_channel(client: Any, handle: str) -> bool:
+    """Resolve + join a channel/supergroup by username. Returns True on success."""
+    from telethon.tl.functions.channels import JoinChannelRequest
+    try:
+        entity = await client.get_entity(handle)
+        try:
+            await client(JoinChannelRequest(entity))
+            log.info("Joined channel %s (%s)", handle, getattr(entity, "title", "?"))
+        except Exception as join_exc:
+            # Already a member, or it's a public broadcast channel that doesn't
+            # need explicit joining — still accessible for iter_messages.
+            log.info("Channel %s reachable, join skipped: %s", handle, join_exc)
+        return True
+    except Exception as exc:
+        log.warning("Channel %s unreachable: %s", handle, exc)
+        return False
+
+
+def join_channels(handles: list[str]) -> dict[str, bool]:
+    """Sync wrapper to ensure a set of channels is joined / reachable."""
+    async def _go() -> dict[str, bool]:
+        client = _build_client()
+        if client is None:
+            return {h: False for h in handles}
+        await client.start(phone=config.TELETHON_PHONE)
+        try:
+            return {h: await _join_channel(client, h) for h in handles}
+        finally:
+            await client.disconnect()
+    try:
+        return asyncio.run(_go())
+    except Exception as exc:
+        log.exception("join_channels failed: %s", exc)
+        return {h: False for h in handles}
+
+
 def scrape_all_channels(
     *,
-    hours_back: int = 18,
+    hours_back: int = 168,
     per_channel_limit: int = 30,
 ) -> list[dict[str, Any]]:
     """Return raw posts from all configured channels (no per-ticker filtering)."""
@@ -112,7 +148,7 @@ def scrape_all_channels(
 def signals_for_holdings(
     tickers: list[str],
     *,
-    hours_back: int = 18,
+    hours_back: int = 168,
     per_channel_limit: int = 30,
 ) -> dict[str, dict[str, Any]]:
     """Return {ticker: {bullish, bearish, score, mentions: [...]}}.

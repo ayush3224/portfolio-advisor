@@ -14,8 +14,11 @@ create table if not exists portfolio_snapshots (
     available_margin        numeric(14, 2),
     used_margin             numeric(14, 2),
     realised_pnl_today      numeric(14, 2),
-    sector_allocation_json  jsonb
+    sector_allocation_json  jsonb,
+    project                 text default 'portfolio-advisor'
 );
+-- Idempotent for portfolio_snapshots tables that pre-date the project column.
+alter table portfolio_snapshots add column if not exists project text default 'portfolio-advisor';
 create index if not exists idx_portfolio_snapshots_time on portfolio_snapshots (snapshot_time desc);
 create index if not exists idx_portfolio_snapshots_run_type on portfolio_snapshots (run_type);
 
