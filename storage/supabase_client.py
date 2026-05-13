@@ -150,6 +150,87 @@ def insert_recommendation(rec: dict[str, Any]) -> str | None:
     return res.data[0]["id"] if res.data else None
 
 
+_BUY_ACTIONS = ("BUY", "BUY-MOMENTUM", "BUY-EVENT", "ADD")
+_SELL_ACTIONS = ("SELL", "PARTIAL-EXIT", "FULL-EXIT", "EXIT-PARTIAL", "EXIT-FULL")
+_HOLD_ACTIONS = ("HOLD", "TIGHTEN-SL")
+
+
+def _todays_recommendation_for(ticker: str, action_family: str) -> dict[str, Any] | None:
+    """Return the most recent un-executed advisor_recommendation row for `ticker`
+    today (UTC), whose action belongs to the given family ('BUY' | 'SELL' | 'HOLD').
+    None if nothing matches."""
+    client = get_client()
+    if client is None:
+        return None
+    families = {"BUY": _BUY_ACTIONS, "SELL": _SELL_ACTIONS, "HOLD": _HOLD_ACTIONS}
+    actions = families.get(action_family.upper())
+    if not actions:
+        return None
+    today = datetime.now(timezone.utc).date().isoformat()
+    start_iso = f"{today}T00:00:00+00:00"
+    end_iso = f"{today}T23:59:59+00:00"
+    try:
+        res = (
+            client.table("advisor_recommendations")
+            .select("*")
+            .eq("ticker", ticker)
+            .in_("action", list(actions))
+            .gte("created_at", start_iso)
+            .lte("created_at", end_iso)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = res.data or []
+        return rows[0] if rows else None
+    except Exception as exc:
+        log.warning("recommendation lookup failed for %s/%s: %s", ticker, action_family, exc)
+        return None
+
+
+def mark_recommendation_executed(
+    rec_id: str,
+    *,
+    executed_price: float | None = None,
+    notes: str = "matched from bot command",
+) -> bool:
+    """Stamp a recommendation as user_executed=true. Returns True on success."""
+    if config.DRY_RUN:
+        log.info("[DRY_RUN] mark_recommendation_executed %s skipped", rec_id)
+        return False
+    client = get_client()
+    if client is None:
+        return False
+    payload: dict[str, Any] = {
+        "user_executed": True,
+        "execution_notes": notes,
+        "executed_at": _utcnow_iso(),
+    }
+    if executed_price is not None and not (isinstance(executed_price, float) and math.isnan(executed_price)):
+        payload["executed_price"] = round(float(executed_price), 4)
+    try:
+        client.table("advisor_recommendations").update(payload).eq("id", rec_id).execute()
+        return True
+    except Exception as exc:
+        log.warning("mark_recommendation_executed failed for %s: %s", rec_id, exc)
+        return False
+
+
+def match_and_mark_execution(
+    ticker: str, action_family: str, *, executed_price: float | None = None,
+) -> dict[str, Any] | None:
+    """Convenience wrapper for the Telegram bot: look up today's matching
+    recommendation, stamp it executed, return the matched row (or None)."""
+    rec = _todays_recommendation_for(ticker, action_family)
+    if not rec:
+        return None
+    ok = mark_recommendation_executed(
+        rec["id"], executed_price=executed_price,
+        notes="matched from bot command",
+    )
+    return rec if ok else None
+
+
 def get_recommendations_for_date(run_date: str) -> list[dict[str, Any]]:
     """Return all recommendations created on a given UTC date (YYYY-MM-DD)."""
     client = get_client()

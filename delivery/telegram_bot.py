@@ -197,6 +197,95 @@ def _box_row(text: str, width: int = 31) -> str:
     return f"│ {text:<{inner}} │"
 
 
+def _mark_for(outcome: str | None) -> str:
+    if outcome == "win":
+        return "✅"
+    if outcome == "loss":
+        return "❌"
+    return "⚪"
+
+
+def _bench_label(market: str) -> str:
+    return "Nifty" if market == "IND" else "S&amp;P"
+
+
+def _format_scorecard_section(title: str, rows: list[dict[str, Any]], bench_pct: float | None, market: str) -> list[str]:
+    lines = [f"<b>{title}</b>"]
+    if not rows:
+        lines.append("<i>No picks today</i>")
+        return lines
+    bench_str = ""
+    if bench_pct is not None:
+        bench_str = f"  ({_bench_label(market)} {bench_pct:+.1f}%)"
+    for r in rows:
+        mark = _mark_for(r.get("outcome"))
+        ticker = (r.get("ticker") or "—")[:10]
+        action = (r.get("action") or "—")[:11]
+        alpha = float(r.get("alpha_pct") or 0)
+        line = f"{mark} {ticker:<9} {action:<11} {alpha:+.1f}% alpha"
+        # Only the first row gets the benchmark tag for readability.
+        if r is rows[0]:
+            line += bench_str
+        lines.append(line)
+    return lines
+
+
+def format_daily_scorecard(date_str: str, scorecard: dict[str, Any], cost: dict[str, Any]) -> str:
+    """4 PM EOD scorecard — per-pick win/loss with alpha vs Nifty / S&P 500."""
+    rule = "━━━━━━━━━━━━━━━━━━━━━━"
+    lines: list[str] = [f"📊 <b>Today's Scorecard — {date_str}</b>", rule]
+
+    body_ind = _format_scorecard_section(
+        "🇮🇳 INDIAN PICKS",
+        scorecard.get("ind_rows") or [],
+        scorecard.get("ind_benchmark"),
+        "IND",
+    )
+    body_us = _format_scorecard_section(
+        "🌐 US PICKS",
+        scorecard.get("us_rows") or [],
+        scorecard.get("us_benchmark"),
+        "US",
+    )
+    lines.append("<pre>" + "\n".join(body_ind) + "</pre>")
+    lines.append("<pre>" + "\n".join(body_us) + "</pre>")
+    lines.append(rule)
+
+    total = scorecard.get("total", 0)
+    wins = scorecard.get("wins", 0)
+    losses = scorecard.get("losses", 0)
+    win_rate = (wins / total * 100) if total else 0
+    executed = scorecard.get("executed", 0)
+    avg_alpha = float(scorecard.get("avg_alpha") or 0)
+    total_pnl = float(scorecard.get("total_pnl") or 0)
+    lines.append(f"Today: <b>{wins} wins / {losses} losses</b> ({win_rate:.0f}%)")
+    lines.append(f"Executed: {executed}/{total} recommendations followed")
+    lines.append(f"Avg alpha: {avg_alpha:+.2f}%")
+    if executed:
+        lines.append(f"P&amp;L (executed): {_fmt_signed_inr(total_pnl)}")
+    lines.append("")
+
+    # ---- AI COST ----
+    lines.append("🤖 <b>AI COST TODAY</b>")
+    cost_lines: list[str] = []
+    for row in cost.get("model_rows") or []:
+        model = row.get("model") or "?"
+        usd = float(row.get("cost_usd") or 0)
+        run_types = row.get("run_types") or []
+        tag = "+".join(rt for rt in run_types)
+        cost_lines.append(f"{model} ({tag}): ${usd:.3f}")
+    if not cost_lines:
+        cost_lines.append("No AI runs logged today")
+    total_usd = float(cost.get("total_cost_usd") or 0)
+    total_inr = float(cost.get("total_cost_inr") or 0)
+    cost_lines.append(f"Total: ${total_usd:.3f} / ₹{total_inr:.2f}")
+    lines.append("<pre>" + "\n".join(cost_lines) + "</pre>")
+
+    lines.append(rule)
+    lines.append("<i>⚠️ Manual execution only</i>")
+    return "\n".join(lines)
+
+
 def format_eod_summary(date_str: str, usage: dict[str, Any], perf: dict[str, Any]) -> str:
     """Compose the comprehensive 4 PM Telegram summary.
 
@@ -341,14 +430,114 @@ def format_weekly_review(s: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def format_weekly_scorecard(summary: dict[str, Any]) -> str:
-    return (
-        "<b>📅 Weekly scorecard</b>\n\n"
-        f"Period: {summary.get('start')} → {summary.get('end')}\n"
-        f"Trades: {summary.get('trades', 0)}\n"
-        f"Win rate: {summary.get('win_rate', 0):.1%}\n"
-        f"Total P&L: {_fmt_price(summary.get('total_pnl', 0))}\n"
-        f"Avg alpha vs Nifty: {(summary.get('avg_alpha') or 0):+.2f}%\n"
-        f"Best: {summary.get('best_trade', '—')}\n"
-        f"Worst: {summary.get('worst_trade', '—')}\n"
-    )
+def _wr_marker(pct: float, *, ok: float = 60.0, warn: float = 50.0) -> str:
+    if pct >= ok:
+        return "✅"
+    if pct >= warn:
+        return "⚪"
+    return "⚠️"
+
+
+def format_weekly_scorecard(metrics: dict[str, Any], insight: dict[str, str] | None = None) -> str:
+    """Sunday weekly backtest recap — overall, per-market, per-action, per-confidence."""
+    rule = "━━━━━━━━━━━━━━━━━━━━━━"
+    insight = insight or {}
+    start = metrics.get("start")
+    end = metrics.get("end")
+    total = metrics.get("total", 0)
+
+    lines: list[str] = [f"📊 <b>Weekly Backtest — {start} → {end}</b>", rule]
+
+    if not total:
+        lines.append("<i>No recommendations recorded this week.</i>")
+        return "\n".join(lines)
+
+    # ---- OVERALL ----
+    win_rate = float(metrics.get("win_rate") or 0)
+    alpha_wr = float(metrics.get("alpha_win_rate") or 0)
+    avg_alpha = float(metrics.get("avg_alpha") or 0)
+    exec_rate = float(metrics.get("execution_rate") or 0)
+    followed = metrics.get("execution", {}).get("followed", {}).get("n", 0)
+    overall = [
+        "📈 <b>OVERALL</b>",
+        f"Win rate:    {win_rate:.0f}% ({metrics.get('total', 0)} calls)",
+        f"Alpha win:   {alpha_wr:.0f}% beat benchmark",
+        f"Avg alpha:   {avg_alpha:+.2f}%",
+        f"Execution:   {followed}/{total} followed ({exec_rate:.0f}%)",
+    ]
+    lines.append("<pre>" + "\n".join(overall) + "</pre>")
+
+    # ---- BY MARKET ----
+    def _market_block(label: str, m: dict[str, Any]) -> list[str]:
+        n = m.get("n", 0)
+        if not n:
+            return [f"<b>{label}</b>", "<i>No picks</i>"]
+        out = [
+            f"<b>{label}</b>",
+            f"Win rate: {m.get('win_rate', 0):.0f}% | Avg alpha: {m.get('avg_alpha', 0):+.2f}%",
+        ]
+        if m.get("best"):
+            b = m["best"]
+            out.append(f"Best:  {b.get('ticker')} {float(b.get('alpha_pct') or 0):+.1f}% alpha")
+        if m.get("worst"):
+            w = m["worst"]
+            out.append(f"Worst: {w.get('ticker')} {float(w.get('alpha_pct') or 0):+.1f}% alpha")
+        return out
+
+    lines.append("<pre>" + "\n".join(_market_block("🇮🇳 INDIAN PICKS", metrics.get("ind", {}))) + "</pre>")
+    lines.append("<pre>" + "\n".join(_market_block("🌐 US PICKS", metrics.get("us", {}))) + "</pre>")
+
+    # ---- BY ACTION ----
+    action_lines = ["🎯 <b>BY ACTION TYPE</b>"]
+    for action, stats in sorted((metrics.get("actions") or {}).items()):
+        n = stats.get("n", 0)
+        wr = stats.get("win_rate", 0)
+        action_lines.append(f"{action:<14} {wr:>3.0f}%  ({n}) {_wr_marker(wr)}")
+    lines.append("<pre>" + "\n".join(action_lines) + "</pre>")
+
+    # ---- BY CONFIDENCE ----
+    conf_lines = ["📊 <b>CONFIDENCE CALIBRATION</b>"]
+    order = ["9-10", "7-8", "5-6", "<5"]
+    for b in order:
+        s = (metrics.get("confidence") or {}).get(b)
+        if not s:
+            continue
+        wr = s.get("win_rate", 0)
+        # Escape '<' so Telegram doesn't try to parse '<5' as an HTML tag.
+        label = b.replace("<", "&lt;")
+        conf_lines.append(f"Conf {label:<7} {wr:>3.0f}% win ({s.get('n', 0)}) {_wr_marker(wr)}")
+    lines.append("<pre>" + "\n".join(conf_lines) + "</pre>")
+
+    # ---- EXECUTION ----
+    ex = metrics.get("execution") or {}
+    fol = ex.get("followed", {})
+    sk = ex.get("skipped", {})
+    pnl = float(ex.get("pnl_inr") or 0)
+    ex_lines = [
+        "💼 <b>YOUR EXECUTION</b>",
+        f"Followed: {fol.get('win_rate', 0):.0f}% win  ({fol.get('n', 0)})",
+        f"Skipped:  {sk.get('win_rate', 0):.0f}% win  ({sk.get('n', 0)})",
+    ]
+    if fol.get("n") and sk.get("n"):
+        diff = float(fol.get("win_rate", 0)) - float(sk.get("win_rate", 0))
+        verdict = "Claude outperforming your intuition" if diff > 5 else (
+            "Your skips were correct" if diff < -5 else "Roughly tied"
+        )
+        ex_lines.append(f"→ {verdict}")
+    lines.append("<pre>" + "\n".join(ex_lines) + "</pre>")
+
+    # ---- CLAUDE INSIGHT ----
+    def _esc(s: str) -> str:
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    if insight.get("insight") or insight.get("watch") or insight.get("tune"):
+        lines.append("")
+        if insight.get("insight"):
+            lines.append(f"💡 <b>INSIGHT:</b> {_esc(insight['insight'])}")
+        if insight.get("watch"):
+            lines.append(f"⚠️ <b>WATCH:</b> {_esc(insight['watch'])}")
+        if insight.get("tune"):
+            lines.append(f"🔧 <b>TUNE:</b> {_esc(insight['tune'])}")
+
+    lines.append(rule)
+    lines.append(f"Weekly P&amp;L (executed trades): {_fmt_signed_inr(pnl)}")
+    return "\n".join(lines)

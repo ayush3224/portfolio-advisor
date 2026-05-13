@@ -16,6 +16,7 @@ from typing import Any
 import pytz
 
 from bot import portfolio_manager
+from storage import supabase_client
 
 log = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ def _format_buy(reply: dict[str, Any]) -> str:
     cmp_ = reply["current_price"]
     upnl = reply["unrealised_pnl"]
     upct = reply["unrealised_pnl_pct"]
-    return (
+    body = (
         f"✅ <b>BUY Confirmed — {ticker}</b>\n"
         f"{_RULE}\n"
         f"Bought:    {qty} shares @ ₹{reply['average_price']:,.2f}\n"
@@ -62,6 +63,10 @@ def _format_buy(reply: dict[str, Any]) -> str:
         f"CMP:       ₹{cmp_:,.2f}\n"
         f"P&amp;L:       {_fmt_rs(upnl, with_sign=True)} ({upct:+.2f}%) {_pnl_marker(upnl)}"
     )
+    matched = reply.get("matched_recommendation")
+    if matched:
+        body += f"\n\n🎯 Matched today's {matched.get('action')} call — marked executed."
+    return body
 
 
 def _format_sell(reply: dict[str, Any]) -> str:
@@ -90,6 +95,9 @@ def _format_sell(reply: dict[str, Any]) -> str:
         )
     else:
         body += f"Position fully closed."
+    matched = reply.get("matched_recommendation")
+    if matched:
+        body += f"\n\n🎯 Matched today's {matched.get('action')} call — marked executed."
     return body
 
 
@@ -229,6 +237,7 @@ _HELP = (
     f"{_RULE}\n"
     "<b>BUY</b> &lt;TICKER&gt; &lt;QTY&gt; &lt;PRICE&gt;\n"
     "<b>SELL</b> &lt;TICKER&gt; &lt;QTY&gt; &lt;PRICE&gt;\n"
+    "<b>EXECUTED</b> &lt;TICKER&gt; &lt;BUY|SELL|HOLD&gt; — mark today's call as followed\n"
     "<b>PORTFOLIO</b> (or PORT / P) — show holdings\n"
     "<b>QUOTE</b> &lt;TICKER&gt; (or Q) — live price\n"
     "<b>STATUS</b> (or S) — system health\n"
@@ -247,6 +256,9 @@ _TRADE_RE = re.compile(
 )
 _QUOTE_RE = re.compile(r"^(QUOTE|Q)\s+([A-Z0-9&\-]+)\s*$", re.IGNORECASE)
 _HISTORY_RE = re.compile(r"^(HISTORY|HIST)\s+([A-Z0-9&\-]+)\s*$", re.IGNORECASE)
+_EXECUTED_RE = re.compile(
+    r"^EXECUTED\s+([A-Z0-9&\-\.]+)\s+(BUY|SELL|HOLD)\s*$", re.IGNORECASE,
+)
 
 
 async def process(text: str) -> str:
@@ -295,5 +307,22 @@ async def process(text: str) -> str:
     if m:
         ticker = m.group(2).upper()
         return _format_history(ticker, portfolio_manager.get_transactions(ticker, limit=5))
+
+    m = _EXECUTED_RE.match(text)
+    if m:
+        ticker = m.group(1).upper()
+        action = m.group(2).upper()
+        rec = supabase_client.match_and_mark_execution(ticker, action)
+        if not rec:
+            return (
+                f"❌ No matching {action} recommendation for <b>{ticker}</b> today.\n"
+                f"<i>Only today's open BUY/SELL/HOLD calls can be marked executed.</i>"
+            )
+        return (
+            f"✅ <b>Marked as executed</b>\n"
+            f"{_RULE}\n"
+            f"{ticker} {rec.get('action')} recommendation from today\n"
+            f"noted as followed."
+        )
 
     return "❌ Invalid command. Send HELP for commands."

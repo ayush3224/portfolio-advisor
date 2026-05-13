@@ -159,6 +159,10 @@ async def add_position(
         "avg_price_at_trade": new_avg,
     })
 
+    matched_rec = supabase_client.match_and_mark_execution(
+        ticker, "BUY", executed_price=price,
+    )
+
     if resolved_market == "IND":
         quote = await upstox_market_data.get_live_quote(ticker)
     else:
@@ -181,6 +185,7 @@ async def add_position(
         "unrealised_pnl_pct": unrealised_pct,
         "buy_total": round(quantity * price, 2),
         "quote_source": (quote or {}).get("source"),
+        "matched_recommendation": matched_rec,
         "message": "BUY confirmed",
     }
 
@@ -239,6 +244,10 @@ async def close_position(ticker: str, quantity: float, price: float) -> dict[str
         "avg_price_at_trade": round(avg_price, 4),
     })
 
+    matched_rec = supabase_client.match_and_mark_execution(
+        ticker, "SELL", executed_price=price,
+    )
+
     market_v = (existing.get("market") or detect_market(ticker)).upper()
     if market_v == "IND":
         quote = await upstox_market_data.get_live_quote(ticker)
@@ -258,6 +267,7 @@ async def close_position(ticker: str, quantity: float, price: float) -> dict[str
         "realised_pnl": realised_pnl,
         "realised_pnl_pct": realised_pct,
         "current_price": round(live_price, 2),
+        "matched_recommendation": matched_rec,
         "message": "SELL confirmed",
     }
 
