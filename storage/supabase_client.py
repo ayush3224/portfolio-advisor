@@ -9,12 +9,24 @@ the caller cares about the value (e.g. snapshot_time).
 from __future__ import annotations
 
 import logging
+import math
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from supabase import Client, create_client
 
 import config
+
+
+def _sanitize_for_json(value: Any) -> Any:
+    """Recursively replace NaN/Inf floats with None so Postgres JSONB accepts the payload."""
+    if isinstance(value, float):
+        return None if math.isnan(value) or math.isinf(value) else value
+    if isinstance(value, dict):
+        return {k: _sanitize_for_json(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_for_json(v) for v in value]
+    return value
 
 log = logging.getLogger(__name__)
 
@@ -52,7 +64,7 @@ def insert_portfolio_snapshot(snapshot: dict[str, Any]) -> str | None:
     client = get_client()
     if client is None:
         return None
-    payload = {
+    payload = _sanitize_for_json({
         "snapshot_time": snapshot.get("snapshot_time", _utcnow_iso()),
         "run_type": snapshot["run_type"],
         "holdings_json": snapshot.get("holdings", []),
@@ -63,7 +75,7 @@ def insert_portfolio_snapshot(snapshot: dict[str, Any]) -> str | None:
         "realised_pnl_today": snapshot.get("realised_pnl_today"),
         "sector_allocation_json": snapshot.get("sector_allocation"),
         "project": config.PROJECT_NAME,
-    }
+    })
     try:
         res = client.table("portfolio_snapshots").insert(payload).execute()
     except Exception as exc:

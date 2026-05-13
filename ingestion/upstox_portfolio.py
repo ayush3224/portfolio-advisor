@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import logging
+import math
 from typing import Any
 
 import config
@@ -100,10 +101,12 @@ def _enrich_with_quotes(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             try:
                 hist = yf.Ticker(yf_sym).history(period="2d", auto_adjust=False)
                 if hist is not None and not hist.empty:
-                    us_quotes[t] = {
-                        "ltp": float(hist["Close"].iloc[-1]),
-                        "source": "yfinance",
-                    }
+                    close = float(hist["Close"].iloc[-1])
+                    if not math.isnan(close):
+                        us_quotes[t] = {
+                            "ltp": close,
+                            "source": "yfinance",
+                        }
             except Exception as exc:
                 log.warning("yfinance quote for %s failed: %s", t, exc)
 
@@ -115,7 +118,11 @@ def _enrich_with_quotes(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         market = (r.get("market") or "IND").upper()
         currency = r.get("currency") or ("USD" if market == "US" else "INR")
         q = (us_quotes if market == "US" else ind_quotes).get(ticker) or {}
-        current_price = float(q.get("ltp") or avg_price)
+        ltp = q.get("ltp")
+        # NaN is truthy in Python, so an explicit isnan check is needed before falling back.
+        if ltp is None or (isinstance(ltp, float) and math.isnan(ltp)):
+            ltp = None
+        current_price = float(ltp if ltp is not None else avg_price)
         current_value = round(qty * current_price, 2)
         cost = qty * avg_price
         unrealised_pnl = round((current_price - avg_price) * qty, 2)

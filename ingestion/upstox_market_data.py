@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -69,13 +70,16 @@ def _yfinance_quote(ticker: str) -> dict[str, Any] | None:
         if hist is None or hist.empty:
             return None
         last = hist.iloc[-1]
+        close = float(last["Close"])
+        if math.isnan(close):
+            return None
         return {
-            "ltp": round(float(last["Close"]), 2),
+            "ltp": round(close, 2),
             "open": round(float(last["Open"]), 2),
             "high": round(float(last["High"]), 2),
             "low": round(float(last["Low"]), 2),
-            "close": round(float(last["Close"]), 2),
-            "volume": int(last["Volume"]) if last["Volume"] else None,
+            "close": round(close, 2),
+            "volume": int(last["Volume"]) if last["Volume"] and not math.isnan(float(last["Volume"])) else None,
             "timestamp": hist.index[-1].isoformat(),
             "source": "yfinance",
         }
