@@ -1,22 +1,20 @@
-"""Enforce all capital / leverage rules from CLAUDE.md before a rec leaves the system.
+"""Enforce capital / position-size rules before a rec leaves the system.
+
+Trading product: CNC delivery. No leverage, no MIS. The historical MIS
+square-off / leverage-cap rules from the original CLAUDE.md no longer apply.
 
 Returns a (passing, rejected_with_reasons) split so the caller can:
   - send only passing recs to Telegram
   - log rejected ones with a clear reason for audit
 
-Rules enforced (per CLAUDE.md):
-  - Never leverage below confidence 7
-  - Skip confidence < 6 entirely
-  - Max single position ≤ 20% of portfolio value
-  - Max sector concentration ≤ 30% of portfolio value
-  - Max total leverage exposure ≤ 60% of portfolio value
-  - Max 3 positions per day
-  - If today's realised loss > DAILY_LOSS_LIMIT: no new leveraged positions
-    AND switch to conservative mode (EXIT-only)
+Rules enforced:
+  - Skip confidence < 6 entirely (for new-entry actions: BUY/ADD)
+  - Max single position ≤ MAX_SINGLE_POSITION_PCT of portfolio value
+  - Max sector concentration ≤ MAX_SECTOR_CONCENTRATION_PCT of portfolio value
+  - Max MAX_POSITIONS_PER_DAY new-entry positions per day
+  - If today's realised loss ≤ -DAILY_LOSS_LIMIT: conservative mode
+    (new BUY/ADD positions blocked; EXIT actions still allowed)
   - Day before high-severity event: halve all position sizes
-  - Day before medium-severity event: reduce leverage by 1x
-  - Outside 9:15-15:30 IST: market closed (caller may abort)
-  - After 14:45 IST: all MIS positions flagged MUST-EXIT regardless of P&L
 """
 
 from __future__ import annotations
@@ -32,8 +30,7 @@ from storage import supabase_client
 
 log = logging.getLogger(__name__)
 
-_LEVERAGED_ACTIONS = {"BUY", "ADD"}
-_EXIT_ACTIONS = {"EXIT-PARTIAL", "EXIT-FULL", "TIGHTEN-SL", "HOLD"}
+_NEW_ENTRY_ACTIONS = {"BUY", "ADD"}
 _IST = pytz.timezone("Asia/Kolkata")
 
 
@@ -60,13 +57,6 @@ def check_market_hours(now: datetime | None = None) -> bool:
     return open_t <= now.time() <= close_t
 
 
-def must_force_exit_mis(now: datetime | None = None) -> bool:
-    """After MIS_FORCE_EXIT_AFTER_IST, every MIS position is MUST-EXIT."""
-    now = now or _now_ist()
-    threshold = _parse_hhmm(config.MIS_FORCE_EXIT_AFTER_IST)
-    return now.time() >= threshold
-
-
 # ---------------------------------------------------------------------------
 # Event calendar
 # ---------------------------------------------------------------------------
@@ -76,7 +66,7 @@ def check_event_tomorrow(today: datetime | None = None) -> dict[str, Any] | None
 
     severity values:
       'high'   → caller should halve position sizes and surface a warning
-      'medium' → caller should reduce leverage by 1x
+      'medium' → informational only (CNC is already 1x; no leverage to cut)
     """
     today = today or _now_ist()
     tomorrow_str = (today.date() + timedelta(days=1)).isoformat()
@@ -93,23 +83,16 @@ def event_warning_text(event: dict[str, Any] | None) -> str | None:
     name = event.get("event", "event")
     if sev == "high":
         return f"⚠️ {name} tomorrow ({event['date']}) — position sizes HALVED."
-    if sev == "medium":
-        return f"⚠️ {name} tomorrow ({event['date']}) — leverage reduced by 1x."
     return f"ℹ️ {name} tomorrow ({event['date']})."
 
 
 def _apply_event_adjustment(rec: dict[str, Any], event: dict[str, Any] | None) -> dict[str, Any]:
-    """Return a new rec with event-based size/leverage adjustment applied."""
-    if not event:
+    """Return a new rec with high-severity size halving applied (CNC: no leverage)."""
+    if not event or event.get("severity") != "high":
         return rec
-    sev = event.get("severity")
     out = dict(rec)
-    if sev == "high":
-        out["capital_deployed"] = float(out.get("capital_deployed") or 0) * 0.5
-        out["shares_qty"] = int((out.get("shares_qty") or 0) * 0.5)
-    elif sev == "medium":
-        new_lev = max(1, int(out.get("leverage_multiplier") or 1) - 1)
-        out["leverage_multiplier"] = new_lev
+    out["capital_deployed"] = float(out.get("capital_deployed") or 0) * 0.5
+    out["shares_qty"] = int((out.get("shares_qty") or 0) * 0.5)
     return out
 
 
@@ -133,7 +116,7 @@ def conservative_mode_active() -> bool:
 
 def _sector_value_after(rec: dict[str, Any], sector_alloc: dict[str, float]) -> tuple[str | None, float]:
     sector = (rec.get("sector") or "Unknown")
-    added = float(rec.get("capital_deployed") or 0) * int(rec.get("leverage_multiplier") or 1)
+    added = float(rec.get("capital_deployed") or 0)
     return sector, sector_alloc.get(sector, 0.0) + added
 
 
@@ -143,48 +126,41 @@ def apply(
     portfolio_value: float,
     sector_allocation: dict[str, float] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Filter recs against all guardrails. Returns (passing, rejected).
+    """Filter recs against guardrails. Returns (passing, rejected).
 
     Event adjustments are applied to a copy of each rec before evaluation, so
-    the persisted record reflects the actual capital/leverage that would have
-    been deployed.
+    the persisted record reflects the actual capital that would have been
+    deployed.
     """
     passing: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
     sector_alloc = dict(sector_allocation or {})
-    cumulative_leverage_exposure = 0.0
     conservative = conservative_mode_active()
     event = check_event_tomorrow()
 
     if conservative:
-        log.warning("Conservative mode active — daily loss limit breached. Allowing EXIT actions only.")
+        log.warning("Conservative mode active — daily loss limit breached. New BUY/ADD entries blocked.")
     if event:
-        log.warning("Event tomorrow: %s (%s) — applying %s adjustment",
+        log.warning("Event tomorrow: %s (%s) — severity=%s",
                     event.get("event"), event.get("date"), event.get("severity"))
 
     for raw in recommendations:
         rec = _apply_event_adjustment(raw, event)
         action = rec.get("action")
         confidence = int(rec.get("confidence_score") or 0)
-        leverage = int(rec.get("leverage_multiplier") or 0)
         capital = float(rec.get("capital_deployed") or 0)
-        notional = capital * max(leverage, 1)
 
         reason: str | None = None
 
-        if conservative and action in _LEVERAGED_ACTIONS:
+        if conservative and action in _NEW_ENTRY_ACTIONS:
             reason = "conservative mode active (daily loss limit breached)"
-        elif confidence < 6 and action in _LEVERAGED_ACTIONS:
+        elif confidence < 6 and action in _NEW_ENTRY_ACTIONS:
             reason = f"confidence {confidence} below floor"
-        elif leverage > 1 and confidence < 7:
-            reason = "leverage requested below confidence 7"
-        elif portfolio_value and notional > portfolio_value * config.MAX_SINGLE_POSITION_PCT and action in _LEVERAGED_ACTIONS:
+        elif portfolio_value and capital > portfolio_value * config.MAX_SINGLE_POSITION_PCT and action in _NEW_ENTRY_ACTIONS:
             reason = f"single-position cap {config.MAX_SINGLE_POSITION_PCT:.0%} breached"
-        elif portfolio_value and (cumulative_leverage_exposure + notional) > portfolio_value * config.MAX_LEVERAGE_EXPOSURE_PCT and leverage > 1:
-            reason = f"total-leverage cap {config.MAX_LEVERAGE_EXPOSURE_PCT:.0%} breached"
         else:
             sector, projected = _sector_value_after(rec, sector_alloc)
-            if portfolio_value and projected > portfolio_value * config.MAX_SECTOR_CONCENTRATION_PCT and action in _LEVERAGED_ACTIONS:
+            if portfolio_value and projected > portfolio_value * config.MAX_SECTOR_CONCENTRATION_PCT and action in _NEW_ENTRY_ACTIONS:
                 reason = f"sector cap {config.MAX_SECTOR_CONCENTRATION_PCT:.0%} breached for {sector}"
 
         if reason:
@@ -193,20 +169,19 @@ def apply(
             continue
 
         passing.append(rec)
-        if leverage > 1:
-            cumulative_leverage_exposure += notional
+        if action in _NEW_ENTRY_ACTIONS:
             sector, projected = _sector_value_after(rec, sector_alloc)
             if sector:
                 sector_alloc[sector] = projected
 
-    # Cap to MAX_POSITIONS_PER_DAY across leveraged actions only
-    leveraged_passing = [r for r in passing if r.get("action") in _LEVERAGED_ACTIONS]
-    if len(leveraged_passing) > config.MAX_POSITIONS_PER_DAY:
-        leveraged_passing.sort(key=lambda r: int(r.get("confidence_score") or 0), reverse=True)
-        kept = set(id(r) for r in leveraged_passing[: config.MAX_POSITIONS_PER_DAY])
+    # Cap to MAX_POSITIONS_PER_DAY across new-entry actions only
+    new_entries = [r for r in passing if r.get("action") in _NEW_ENTRY_ACTIONS]
+    if len(new_entries) > config.MAX_POSITIONS_PER_DAY:
+        new_entries.sort(key=lambda r: int(r.get("confidence_score") or 0), reverse=True)
+        kept = set(id(r) for r in new_entries[: config.MAX_POSITIONS_PER_DAY])
         new_passing: list[dict[str, Any]] = []
         for r in passing:
-            if r.get("action") in _LEVERAGED_ACTIONS and id(r) not in kept:
+            if r.get("action") in _NEW_ENTRY_ACTIONS and id(r) not in kept:
                 rejected.append({**r, "rejection_reason": f"daily position cap {config.MAX_POSITIONS_PER_DAY} reached"})
             else:
                 new_passing.append(r)

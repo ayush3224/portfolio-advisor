@@ -1,4 +1,8 @@
-"""Central config — loads env, defines capital model and leverage map."""
+"""Central config — loads env, defines capital model.
+
+Trading product: CNC (delivery / swing). No MIS, no intraday leverage. Every
+trade is sized 1x against capital_deployed only — `leverage_multiplier` is
+retained as a column for schema continuity but is always 1."""
 
 import logging
 import os
@@ -41,14 +45,14 @@ SONNET_MODEL = "claude-sonnet-4-5"
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
 
 
-# --- Leverage map: confidence → (multiplier, capital fraction) ---
-# None => skip (do not recommend)
-LEVERAGE_MAP: dict[int, tuple[int, float] | None] = {
-    10: (3, 0.40),
-    9:  (3, 0.40),
-    8:  (2, 0.30),
-    7:  (2, 0.30),
-    6:  (1, 0.20),
+# --- Capital map: confidence → capital_fraction (1x CNC, no leverage) ---
+# None => skip (do not recommend). Notional == capital_deployed everywhere.
+CAPITAL_FRACTION_MAP: dict[int, float | None] = {
+    10: 0.40,
+    9:  0.40,
+    8:  0.30,
+    7:  0.30,
+    6:  0.20,
     5:  None,
     4:  None,
     3:  None,
@@ -59,16 +63,16 @@ LEVERAGE_MAP: dict[int, tuple[int, float] | None] = {
 
 
 def sizing_for_confidence(confidence: int) -> tuple[int, float] | None:
-    """Return (leverage, capital_fraction) for a confidence score, or None to skip."""
-    return LEVERAGE_MAP.get(int(confidence))
+    """Return (leverage, capital_fraction) for a confidence score, or None to skip.
+
+    Tuple shape preserved for existing callers; leverage is always 1 (CNC)."""
+    frac = CAPITAL_FRACTION_MAP.get(int(confidence))
+    return (1, frac) if frac is not None else None
 
 
-# --- Risk guardrails ---
-MAX_LEVERAGE_EXPOSURE_PCT = 0.60   # of portfolio value
+# --- Risk guardrails (CNC / swing — no leverage rules) ---
 MAX_SINGLE_POSITION_PCT = 0.20
 MAX_SECTOR_CONCENTRATION_PCT = 0.30
-MIS_EXIT_TIME_IST = "15:15"            # last allowable MIS square-off
-MIS_FORCE_EXIT_AFTER_IST = "14:45"     # force-exit threshold flagged by EOD run
 MARKET_OPEN_IST = "09:15"
 MARKET_CLOSE_IST = "15:30"
 
@@ -172,10 +176,34 @@ def instrument_key_for(ticker: str | None) -> str | None:
     return INSTRUMENT_KEYS.get(ticker.upper())
 
 
+# --- yfinance symbol overrides for NSE tickers ---
+# yfinance does not always carry the same ticker symbol that NSE / our internal
+# code uses. When the default `<TICKER>.NS` returns no data we route through
+# these overrides. Tested 2026-05-13 — any tickers not in this map use
+# `<TICKER>.NS` directly (which works for the vast majority of NSE stocks).
+#
+# ICICINIFTY → NIFTYIETF.NS: same issuer (ICICI Prudential Nifty 50 ETF). NAV
+# tracks the same underlying so it is a faithful proxy.
+YFINANCE_IND_SYMBOL_MAP: dict[str, str] = {
+    "ICICIGOLD":     "GOLDIETF.NS",   # ICICI Pru Gold ETF — NSE symbol is GOLDIETF
+    "ICICINIFTY":    "NIFTYIETF.NS",  # ICICI Pru Nifty 50 ETF — NSE symbol is NIFTYIETF
+    "MANKINDPHARMA": "MANKIND.NS",    # Mankind Pharma — NSE symbol is MANKIND
+}
+
+
+def yf_ind_symbol(ticker: str | None) -> str | None:
+    """yfinance symbol for an NSE-listed ticker. Returns the override if any,
+    otherwise `<TICKER>.NS`. Returns None for empty input."""
+    if not ticker:
+        return None
+    t = ticker.upper().strip()
+    return YFINANCE_IND_SYMBOL_MAP.get(t, f"{t}.NS")
+
+
 # --- Known macro / event calendar ---
 # severity drives risk_guardrails.check_event_tomorrow:
 #   high   → halve all position sizes  (capital_deployed × 0.5)
-#   medium → reduce leverage by 1x     (e.g. 3x → 2x)
+#   medium → (no-op since CNC is 1x; surfaced as informational warning only)
 # Add events as they're announced; entries with date < today are harmless.
 KNOWN_EVENTS: list[dict[str, str]] = [
     {"date": "2026-05-07", "event": "RBI Monetary Policy",   "severity": "high"},

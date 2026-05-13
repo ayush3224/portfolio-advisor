@@ -63,9 +63,13 @@ async def _upstox_ltp(instrument_keys: list[str]) -> dict[str, dict[str, Any]] |
 
 
 def _yfinance_quote(ticker: str) -> dict[str, Any] | None:
-    """Single-ticker fallback via yfinance (`<TICKER>.NS`)."""
+    """Single-ticker fallback via yfinance, honoring YFINANCE_IND_SYMBOL_MAP
+    for NSE tickers Yahoo doesn't carry under the default `<TICKER>.NS`."""
+    symbol = config.yf_ind_symbol(ticker)
+    if not symbol:
+        return None
     try:
-        t = yf.Ticker(f"{ticker.upper()}.NS")
+        t = yf.Ticker(symbol)
         hist = t.history(period="2d", auto_adjust=False)
         if hist is None or hist.empty:
             return None
@@ -189,8 +193,11 @@ async def _upstox_historical(
 
 
 def _yfinance_history(ticker: str, days: int) -> list[dict[str, Any]] | None:
+    symbol = config.yf_ind_symbol(ticker)
+    if not symbol:
+        return None
     try:
-        t = yf.Ticker(f"{ticker.upper()}.NS")
+        t = yf.Ticker(symbol)
         hist = t.history(period=f"{max(days, 1)}d", auto_adjust=False)
         if hist is None or hist.empty:
             return None

@@ -34,7 +34,7 @@ def _attach_sizing(rec: dict[str, Any]) -> dict[str, Any] | None:
         return None
     return {
         **rec,
-        "leverage_multiplier": sizing.leverage_multiplier,
+        "leverage_multiplier": 1,  # CNC swing — always 1x
         "capital_deployed": sizing.capital_deployed,
         "shares_qty": sizing.shares_qty,
         "is_paper": sizing.is_paper,
@@ -121,6 +121,21 @@ def run() -> dict[str, Any]:
             persisted.append({**rec, "id": rec_id})
         except Exception as exc:
             log.exception("insert_recommendation failed for %s: %s", rec.get("ticker"), exc)
+
+    # Enrich HOLD/TIGHTEN-SL recs with the user's actual position from the
+    # snapshot so the Telegram formatter can show qty/avg/unrealised P&L.
+    holdings_by_ticker = {
+        h.get("ticker") or h.get("trading_symbol"): h
+        for h in (snapshot.get("holdings") or [])
+    }
+    for rec in persisted:
+        if (rec.get("action") or "").upper() in ("HOLD", "TIGHTEN-SL"):
+            h = holdings_by_ticker.get(rec.get("ticker"))
+            if h:
+                rec["held_qty"] = h.get("quantity")
+                rec["held_avg_price"] = h.get("average_price")
+                rec["held_unrealised_pnl"] = h.get("unrealised_pnl")
+                rec["held_unrealised_pnl_pct"] = h.get("unrealised_pnl_pct")
 
     body = telegram_bot.format_premarket(persisted, skipped=skipped)
     warning = risk_guardrails.event_warning_text(risk_guardrails.check_event_tomorrow())

@@ -65,7 +65,7 @@ def _format_buy(reply: dict[str, Any]) -> str:
     )
     matched = reply.get("matched_recommendation")
     if matched:
-        body += f"\n\n🎯 Matched today's {matched.get('action')} call — marked executed."
+        body += "\n\n📋 Matched to today's recommendation"
     return body
 
 
@@ -97,7 +97,7 @@ def _format_sell(reply: dict[str, Any]) -> str:
         body += f"Position fully closed."
     matched = reply.get("matched_recommendation")
     if matched:
-        body += f"\n\n🎯 Matched today's {matched.get('action')} call — marked executed."
+        body += "\n\n📋 Matched to today's recommendation"
     return body
 
 
@@ -315,14 +315,8 @@ async def process(text: str) -> str:
         rec = supabase_client.match_and_mark_execution(ticker, action)
         if not rec:
             return (
-                f"❌ No matching {action} recommendation for <b>{ticker}</b> today.\n"
-                f"<i>Only today's open BUY/SELL/HOLD calls can be marked executed.</i>"
+                f"❌ No matching {action} recommendation for <b>{ticker}</b> today."
             )
-        return (
-            f"✅ <b>Marked as executed</b>\n"
-            f"{_RULE}\n"
-            f"{ticker} {rec.get('action')} recommendation from today\n"
-            f"noted as followed."
-        )
+        return f"✅ Marked {ticker} {rec.get('action')} as executed"
 
     return "❌ Invalid command. Send HELP for commands."

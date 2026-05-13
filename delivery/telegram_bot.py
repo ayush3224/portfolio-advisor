@@ -78,22 +78,38 @@ def format_premarket(
         return body + _skipped_footer(skipped_list)
     lines = ["<b>🌅 Pre-market 9:00 AM</b>", ""]
     for r in recs:
+        action = (r.get("action") or "").upper()
         action_emoji = {
             "BUY": "🟢", "ADD": "🟢", "HOLD": "⚪",
             "EXIT-PARTIAL": "🟡", "EXIT-FULL": "🔴", "TIGHTEN-SL": "🟠",
-        }.get(r["action"], "•")
+        }.get(action, "•")
         lines.append(
-            f"{action_emoji} <b>{r['action']} {r['ticker']}</b> "
+            f"{action_emoji} <b>{action} {r['ticker']}</b> "
             f"(conf {r['confidence_score']}/10)"
         )
         if r.get("entry_price"):
             lines.append(f"   Entry: {_fmt_price(r['entry_price'])}  "
                          f"Target: {_fmt_price(r.get('target_price'))}  "
                          f"SL: {_fmt_price(r.get('stop_loss'))}")
-        if r.get("leverage_multiplier"):
+        # HOLD/TIGHTEN-SL recommend keeping what you already own — show the
+        # existing position, not new-entry sizing. New-entry actions (BUY/ADD)
+        # show the proposed deploy. Leverage is gone — every trade is 1x CNC.
+        if action in ("HOLD", "TIGHTEN-SL"):
+            qty = r.get("held_qty")
+            avg = r.get("held_avg_price")
+            pnl = r.get("held_unrealised_pnl")
+            pnl_pct = r.get("held_unrealised_pnl_pct")
+            if qty is not None and avg is not None:
+                pnl_part = ""
+                if pnl is not None and pnl_pct is not None:
+                    pnl_part = f" | Unrealised: {_fmt_signed_inr(pnl)} ({pnl_pct:+.2f}%)"
+                lines.append(
+                    f"   Holding: {int(qty) if float(qty).is_integer() else qty} shares | "
+                    f"Avg: {_fmt_price(avg)}{pnl_part}"
+                )
+        elif r.get("shares_qty") or r.get("capital_deployed"):
             lines.append(
                 f"   Size: {r.get('shares_qty', '—')} shares  "
-                f"Leverage: {r['leverage_multiplier']}x  "
                 f"Capital: {_fmt_price(r.get('capital_deployed'))}"
             )
         if r.get("reasoning"):
@@ -218,11 +234,17 @@ def _format_scorecard_section(title: str, rows: list[dict[str, Any]], bench_pct:
     if bench_pct is not None:
         bench_str = f"  ({_bench_label(market)} {bench_pct:+.1f}%)"
     for r in rows:
-        mark = _mark_for(r.get("outcome"))
+        executed = bool(r.get("user_executed"))
+        outcome = r.get("outcome")
         ticker = (r.get("ticker") or "—")[:10]
         action = (r.get("action") or "—")[:11]
         alpha = float(r.get("alpha_pct") or 0)
-        line = f"{mark} {ticker:<9} {action:<11} {alpha:+.1f}% alpha"
+        if executed:
+            outcome_mark = _mark_for(outcome)
+            line = f"⚡ {ticker:<9} {action:<11} executed {outcome_mark}"
+        else:
+            mark = _mark_for(outcome)
+            line = f"{mark} {ticker:<9} {action:<11} {alpha:+.1f}% alpha"
         # Only the first row gets the benchmark tag for readability.
         if r is rows[0]:
             line += bench_str
@@ -269,11 +291,10 @@ def format_daily_scorecard(date_str: str, scorecard: dict[str, Any], cost: dict[
     lines.append("🤖 <b>AI COST TODAY</b>")
     cost_lines: list[str] = []
     for row in cost.get("model_rows") or []:
-        model = row.get("model") or "?"
+        label = row.get("label") or row.get("model") or "?"
+        model = row.get("model") or ""
         usd = float(row.get("cost_usd") or 0)
-        run_types = row.get("run_types") or []
-        tag = "+".join(rt for rt in run_types)
-        cost_lines.append(f"{model} ({tag}): ${usd:.3f}")
+        cost_lines.append(f"{label} {model}:".ljust(20) + f"${usd:.3f}")
     if not cost_lines:
         cost_lines.append("No AI runs logged today")
     total_usd = float(cost.get("total_cost_usd") or 0)
@@ -487,25 +508,29 @@ def format_weekly_scorecard(metrics: dict[str, Any], insight: dict[str, str] | N
     lines.append("<pre>" + "\n".join(_market_block("🇮🇳 INDIAN PICKS", metrics.get("ind", {}))) + "</pre>")
     lines.append("<pre>" + "\n".join(_market_block("🌐 US PICKS", metrics.get("us", {}))) + "</pre>")
 
-    # ---- BY ACTION ----
-    action_lines = ["🎯 <b>BY ACTION TYPE</b>"]
-    for action, stats in sorted((metrics.get("actions") or {}).items()):
+    # ---- BY ACTION GROUP ----
+    action_lines = ["🎯 <b>BY ACTION</b>"]
+    order = ["ADD/BUY", "HOLD", "EXIT calls", "Other"]
+    actions_map = metrics.get("actions") or {}
+    for action in order:
+        stats = actions_map.get(action)
+        if not stats:
+            continue
         n = stats.get("n", 0)
         wr = stats.get("win_rate", 0)
-        action_lines.append(f"{action:<14} {wr:>3.0f}%  ({n}) {_wr_marker(wr)}")
+        action_lines.append(f"{action:<11} {wr:>3.0f}%  ({n}) {_wr_marker(wr)}")
     lines.append("<pre>" + "\n".join(action_lines) + "</pre>")
 
     # ---- BY CONFIDENCE ----
-    conf_lines = ["📊 <b>CONFIDENCE CALIBRATION</b>"]
-    order = ["9-10", "7-8", "5-6", "<5"]
+    conf_lines = ["📊 <b>CONFIDENCE</b>"]
+    order = ["8-10", "6-7", "<6"]
     for b in order:
         s = (metrics.get("confidence") or {}).get(b)
         if not s:
             continue
         wr = s.get("win_rate", 0)
-        # Escape '<' so Telegram doesn't try to parse '<5' as an HTML tag.
         label = b.replace("<", "&lt;")
-        conf_lines.append(f"Conf {label:<7} {wr:>3.0f}% win ({s.get('n', 0)}) {_wr_marker(wr)}")
+        conf_lines.append(f"Conf {label:<5} {wr:>3.0f}% win ({s.get('n', 0)}) {_wr_marker(wr)}")
     lines.append("<pre>" + "\n".join(conf_lines) + "</pre>")
 
     # ---- EXECUTION ----

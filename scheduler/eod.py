@@ -1,8 +1,7 @@
 """3:00 PM IST orchestrator — EOD exit / hold decisions.
 
-By 3:00 PM all leveraged MIS positions need to be in exit mode (full flat by
-3:15). For delivery (CNC) holdings we also ask Haiku whether to hold overnight
-or trim into the close.
+CNC swing only. Asks Haiku whether each holding should hold overnight, trim,
+or fully exit into the close. No intraday MIS positions to square off.
 """
 
 from __future__ import annotations
@@ -53,18 +52,10 @@ def run() -> dict[str, Any]:
         log.info("Market closed — eod run aborted")
         return {"decisions": [], "skipped": "market_closed"}
 
-    force_exit_mis = risk_guardrails.must_force_exit_mis()
     snapshot = upstox_portfolio.get_portfolio_snapshot("eod")
-    positions = snapshot.get("positions") or []
     holdings = snapshot.get("holdings") or []
 
     blocks: list[dict[str, Any]] = []
-    for p in positions:
-        if int(p.get("quantity") or 0) == 0:
-            continue
-        b = _to_block(p, "MIS")
-        if b:
-            blocks.append(b)
     for h in holdings:
         b = _to_block(h, "CNC")
         if b:
@@ -76,28 +67,6 @@ def run() -> dict[str, Any]:
 
     result = eod_prompt.run(blocks)
     decisions = result.get("decisions") or []
-
-    # MIS force-exit override: after MIS_FORCE_EXIT_AFTER_IST every MIS row
-    # MUST be EXIT-FULL regardless of what the model decided.
-    by_ticker = {b["ticker"]: b for b in blocks}
-    if force_exit_mis:
-        log.info("Past MIS force-exit threshold — overriding all MIS decisions to EXIT-FULL")
-        for d in decisions:
-            block = by_ticker.get(d.get("ticker"))
-            if block and block.get("product") == "MIS":
-                d["action"] = "EXIT-FULL"
-                d["hold_overnight"] = False
-                d["reasoning"] = (d.get("reasoning") or "") + " [forced: past MIS exit threshold]"
-        # Cover any MIS rows the model omitted entirely
-        decided = {d.get("ticker") for d in decisions}
-        for b in blocks:
-            if b.get("product") == "MIS" and b["ticker"] not in decided:
-                decisions.append({
-                    "ticker": b["ticker"],
-                    "action": "EXIT-FULL",
-                    "hold_overnight": False,
-                    "reasoning": "forced: past MIS exit threshold; no model decision",
-                })
 
     persisted: list[dict[str, Any]] = []
     for d in decisions:
@@ -114,7 +83,7 @@ def run() -> dict[str, Any]:
             log.exception("eod persist failed for %s: %s", d.get("ticker"), exc)
 
     telegram_bot.send_alert(_maybe_banner(telegram_bot.format_eod(persisted)))
-    return {"decisions": persisted, "mis_forced_exit": force_exit_mis}
+    return {"decisions": persisted}
 
 
 if __name__ == "__main__":

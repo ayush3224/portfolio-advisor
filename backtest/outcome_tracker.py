@@ -71,7 +71,12 @@ def fetch_benchmarks() -> dict[str, float]:
 
 
 def _close_for(ticker: str, market: str) -> float | None:
-    symbol = f"{ticker}.NS" if market == "IND" else ticker.replace(".", "-")
+    if market == "IND":
+        symbol = config.yf_ind_symbol(ticker)
+    else:
+        symbol = ticker.replace(".", "-")
+    if not symbol:
+        return None
     oc = _yf_today_open_close(symbol)
     return oc[1] if oc else None
 
@@ -156,10 +161,9 @@ def compute_outcome(
 
     user_executed = bool(rec.get("user_executed"))
     shares = rec.get("shares_qty") or 0
-    leverage = int(rec.get("leverage_multiplier") or 1)
     capital = float(rec.get("capital_deployed") or 0)
 
-    # P&L only matters if the call was actually executed.
+    # P&L only matters if the call was actually executed. CNC = 1x, no leverage.
     actual_pnl_inr: float = 0.0
     if user_executed:
         if shares:
@@ -168,7 +172,7 @@ def compute_outcome(
             if market == "US":
                 actual_pnl_inr *= config.USD_INR_RATE
         elif capital:
-            actual_pnl_inr = capital * leverage * (return_pct / 100)
+            actual_pnl_inr = capital * (return_pct / 100)
 
     return {
         "recommendation_id": rec.get("id"),
@@ -181,7 +185,7 @@ def compute_outcome(
         "action": rec.get("action"),
         "recommended_action": rec.get("action"),
         "confidence_score": rec.get("confidence_score"),
-        "leverage_multiplier": leverage,
+        "leverage_multiplier": 1,
         "price_at_recommendation": entry_f,
         "price_at_close": round(close, 4),
         "return_pct": round(return_pct, 4),

@@ -4,8 +4,11 @@
 A personal AI-powered portfolio advisor for an Indian retail investor
 using Upstox as the primary broker. Runs 3 times daily on a Hostinger
 VPS (Linux) via cron. Delivers actionable BUY/SELL/HOLD recommendations
-with position sizing and leverage guidance to a private Telegram chat.
-Execution is always manual — the system never places orders.
+with position sizing to a private Telegram chat. Execution is always
+manual — the system never places orders.
+
+**Trading product: CNC (delivery / swing). No leverage, no intraday MIS.**
+Every recommendation is sized 1x against capital_deployed only.
 
 ## Core philosophy
 This is a portfolio advisor, not a stock screener.
@@ -15,7 +18,7 @@ real holdings from Upstox and tells you what to do with them.
 
 ## Daily schedule
 - 9:00 AM IST  → Pre-market full portfolio advisory (Claude Sonnet 4.5)
-- 12:30 PM IST → Midday leveraged position check (Claude Haiku 3.5)
+- (12:30 PM IST midday MIS check is retired — CNC swing has no intraday positions)
 - 3:00 PM IST  → EOD exit/hold decisions (Claude Haiku 3.5)
 - 4:00 PM IST  → Outcome logger — no Claude, free
 
@@ -29,20 +32,18 @@ real holdings from Upstox and tells you what to do with them.
 - Daily capital budget: ₹10,000
 - Daily loss hard stop: ₹2,000 (20% of daily capital)
 - Max positions per day: 3
-- Position sizing by confidence:
-  Conf 9-10: 40% of daily capital (₹4,000) × 3x leverage = ₹12,000
-  Conf 7-8:  30% of daily capital (₹3,000) × 2x leverage = ₹6,000
-  Conf 6:    20% of daily capital (₹2,000) × 1x (no leverage)
+- Position sizing by confidence (1x CNC — no leverage):
+  Conf 9-10: 40% of daily capital (₹4,000)
+  Conf 7-8:  30% of daily capital (₹3,000)
+  Conf 6:    20% of daily capital (₹2,000)
   Conf <6:   Skip — do not recommend
 
-## Leverage rules
-- Never leverage below confidence 7
-- Max total leverage exposure: 60% of portfolio value
+## Position rules
 - Max single position: 20% of portfolio value
 - Max sector concentration: 30% of portfolio value
-- If today realised loss > ₹2,000: no new leveraged positions
-- Day before major event (RBI, budget, earnings): halve position sizes
-- All MIS (leveraged) positions must exit by 3:15 PM
+- Max 3 new BUY/ADD positions per day
+- If today realised loss > ₹2,000: no new BUY/ADD positions (EXIT still allowed)
+- Day before major event (RBI, budget, earnings): halve new-entry position sizes
 
 ## Action types
 - BUY: Fresh entry into a stock not currently held
@@ -92,7 +93,7 @@ portfolio-advisor/
 ├── processing/
 │   ├── __init__.py
 │   ├── portfolio_context.py # Builds per-holding context block
-│   ├── position_sizer.py   # Confidence → leverage → qty
+│   ├── position_sizer.py   # Confidence → capital fraction → qty
 │   └── risk_guardrails.py  # Enforce all capital rules
 ├── analysis/
 │   ├── __init__.py
@@ -159,6 +160,6 @@ DAILY_LOSS_LIMIT=2000
 - Catch all per-ticker exceptions — never crash the full pipeline
 - Log all token usage and cost to run_log after every Claude call
 - If daily loss limit hit: switch all subsequent runs to conservative
-  mode (no leverage, EXIT recommendations only)
+  mode (no new BUY/ADD; EXIT recommendations only)
 - All timestamps in UTC in Supabase
 - DRY_RUN=true flag skips Telegram send and DB writes

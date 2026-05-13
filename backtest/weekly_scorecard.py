@@ -56,17 +56,35 @@ def _avg_alpha(rows: list[dict[str, Any]]) -> float:
 
 
 def _bucket_confidence(score: Any) -> str:
+    """High-bucket vs low-bucket split per CNC swing model.
+
+    8-10 = high conviction; 6-7 = moderate; <6 should not reach backtest_results
+    because risk_guardrails skips them, but if it does we tag it explicitly.
+    """
     try:
         s = int(score or 0)
     except (TypeError, ValueError):
         return "?"
-    if s >= 9:
-        return "9-10"
-    if s >= 7:
-        return "7-8"
-    if s >= 5:
-        return "5-6"
-    return "<5"
+    if s >= 8:
+        return "8-10"
+    if s >= 6:
+        return "6-7"
+    return "<6"
+
+
+_ACTION_GROUPS = {
+    "ADD/BUY":     {"ADD", "BUY", "BUY-MOMENTUM", "BUY-EVENT"},
+    "HOLD":        {"HOLD", "TIGHTEN-SL"},
+    "EXIT calls":  {"EXIT-FULL", "EXIT-PARTIAL", "PARTIAL-EXIT", "FULL-EXIT", "SELL"},
+}
+
+
+def _group_action(action: str | None) -> str:
+    a = (action or "").upper()
+    for group, members in _ACTION_GROUPS.items():
+        if a in members:
+            return group
+    return "Other"
 
 
 def compute_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -78,10 +96,10 @@ def compute_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     executed = [r for r in rows if r.get("user_executed")]
     skipped = [r for r in rows if not r.get("user_executed")]
 
-    # By action type
+    # By action group (ADD/BUY vs HOLD vs EXIT calls)
     actions: dict[str, list[dict[str, Any]]] = {}
     for r in rows:
-        actions.setdefault((r.get("action") or "?"), []).append(r)
+        actions.setdefault(_group_action(r.get("action")), []).append(r)
     action_stats = {
         a: {"n": len(rs), "win_rate": _win_rate(rs)}
         for a, rs in actions.items()

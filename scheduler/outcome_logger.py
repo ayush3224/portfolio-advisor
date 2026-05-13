@@ -62,32 +62,59 @@ def _short_model(name: str | None) -> str:
     return name
 
 
+# Map run_type → user-facing IST time label so each row reads like the mockup
+# ("9AM Sonnet: $0.017"). Falls back to the actual IST start time on unknown
+# run_types.
+_RUN_TYPE_TIME_LABEL = {
+    "premarket":         "9AM",
+    "midday":            "12:30PM",
+    "eod":               "3PM",
+    "outcome_logger":    "4PM",
+    "us_advisory":       "7:30PM",
+    "us_premarket":      "7:30PM",
+    "weekly_scorecard":  "Sun 8PM",
+}
+
+
+def _ist_label_for(run_type: str | None, started_at_iso: str | None) -> str:
+    if run_type and run_type in _RUN_TYPE_TIME_LABEL:
+        return _RUN_TYPE_TIME_LABEL[run_type]
+    if not started_at_iso:
+        return run_type or "?"
+    try:
+        dt = datetime.fromisoformat(started_at_iso.replace("Z", "+00:00")).astimezone(_IST)
+        return dt.strftime("%-I:%M%p").replace(":00", "")
+    except Exception:
+        return run_type or "?"
+
+
 def build_cost_block(today_ist: date) -> dict[str, Any]:
-    """Group today's run_log entries by model. Returns dict for the formatter."""
+    """Group today's run_log entries by IST time-of-day + model. One row per
+    distinct (time-label, model) so the message reads like:
+        9AM Sonnet:     $0.017
+        7:30PM Sonnet:  $0.133
+        3PM Haiku:      $0.002
+    """
     today_start, today_end = _ist_day_bounds_utc(today_ist)
     todays_runs = supabase_client.get_run_log_between(today_start, today_end)
 
-    grouped: dict[str, dict[str, Any]] = {}
+    grouped: dict[tuple[str, str], float] = {}
     total_cost = 0.0
     for r in todays_runs:
-        model = _short_model(r.get("model_used"))
         cost = float(r.get("estimated_cost_usd") or 0.0)
+        if cost == 0.0:
+            continue
         total_cost += cost
-        slot = grouped.setdefault(model, {"cost_usd": 0.0, "run_types": []})
-        slot["cost_usd"] += cost
-        run_type = r.get("run_type") or "?"
-        if run_type not in slot["run_types"]:
-            slot["run_types"].append(run_type)
+        model = _short_model(r.get("model_used"))
+        label = _ist_label_for(r.get("run_type"), r.get("started_at"))
+        key = (label, model)
+        grouped[key] = grouped.get(key, 0.0) + cost
 
-    rows = sorted(grouped.items(), key=lambda kv: -kv[1]["cost_usd"])
+    rows = sorted(grouped.items(), key=lambda kv: -kv[1])
     return {
         "model_rows": [
-            {
-                "model": m,
-                "cost_usd": s["cost_usd"],
-                "run_types": s["run_types"],
-            }
-            for m, s in rows
+            {"label": label, "model": model, "cost_usd": cost}
+            for (label, model), cost in rows
         ],
         "total_cost_usd": total_cost,
         "total_cost_inr": total_cost * config.USD_INR_RATE,
