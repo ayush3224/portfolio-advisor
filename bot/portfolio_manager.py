@@ -27,10 +27,15 @@ log = logging.getLogger(__name__)
 
 # US ETFs. These carry no exchange suffix when typed, look nothing like an
 # NSE symbol, and are the names most likely to be entered bare — a bare ETF
-# ticker defaulting to IND books a dollar price as rupees (this is what put
-# SPDR into holdings at "₹428.60"). None of them may ever resolve to IND.
+# ticker defaulting to IND books a dollar price as rupees. None of them may
+# ever resolve to IND.
+#
+# SPY, not SPDR: "SPDR" is State Street's fund-family brand, not a symbol, so
+# it has no quote and classifying it as US only moved the problem (a position
+# whose CMP never updates). It is refused outright in
+# command_handler.REJECTED_TICKERS instead.
 _US_ETFS = {
-    "SPDR", "SPY", "QQQ", "VTI", "IWM", "ARKK",
+    "SPY", "QQQ", "VTI", "IWM", "ARKK",
     "GLD", "SLV", "IAU", "AAAU", "GDX",
     "SOXX", "PSI", "XLF", "XLE", "XLK",
 }

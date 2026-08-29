@@ -8,6 +8,7 @@ Output strings use HTML formatting (matches the bot_runner's parse_mode=HTML).
 
 from __future__ import annotations
 
+import html
 import logging
 import math
 import re
@@ -59,6 +60,29 @@ def _pnl_marker(pnl: float | None) -> str:
     if pnl < 0:
         return "🔴"
     return "⚪"
+
+
+# Symbols that look like tickers but aren't tradable: fund-family brand names
+# (SPDR), index names (NIFTY, SENSEX), and asset classes (GOLD, BITCOIN). Each
+# maps to what the user most likely meant. A BUY on one of these is refused
+# before any database write — SPDR in particular quotes as NaN forever, so
+# accepting it books a position whose CMP never updates.
+REJECTED_TICKERS = {
+    "SPDR": "GLD (SPDR Gold Trust) or SPY (S&P 500)",
+    "NIFTY": "NIFTYBEES or ICICINIFTY",
+    "SENSEX": "SETFNIF50 or NIFTYBEES",
+    "BITCOIN": "Not supported — equity only",
+    "GOLD": "GLD (US) or GOLDBEES (India)",
+}
+
+
+def _format_rejected_ticker(ticker: str) -> str:
+    suggestion = REJECTED_TICKERS[ticker]
+    return (
+        f"❌ {ticker} is not a valid ticker symbol.\n"
+        f"Did you mean: {html.escape(suggestion)}?\n\n"
+        f"Resend with the correct ticker."
+    )
 
 
 def _format_buy(reply: dict[str, Any]) -> str:
@@ -402,6 +426,11 @@ async def process(text: str) -> list[str]:
             return ["❌ Invalid number in command. Send HELP for examples."]
         market_u = market.upper() if market else None
         if action.upper() == "BUY":
+            # Refused before add_position runs — no holdings or transactions
+            # row is created. SELL is deliberately exempt so an already-booked
+            # bad position can still be closed out.
+            if ticker.upper() in REJECTED_TICKERS:
+                return [_format_rejected_ticker(ticker.upper())]
             res = await portfolio_manager.add_position(ticker, qty, price, market=market_u)
             if not res.get("success"):
                 # Validation failures (e.g. an INR price on a US stock) carry a
