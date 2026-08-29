@@ -237,7 +237,7 @@ _HELP = (
     f"{_RULE}\n"
     "<b>BUY</b> &lt;TICKER&gt; &lt;QTY&gt; &lt;PRICE&gt;\n"
     "<b>SELL</b> &lt;TICKER&gt; &lt;QTY&gt; &lt;PRICE&gt;\n"
-    "<b>EXECUTED</b> &lt;TICKER&gt; &lt;BUY|SELL|HOLD&gt; — mark today's call as followed\n"
+    "<b>EXECUTED</b> &lt;TICKER&gt; &lt;BUY|SELL|EXIT|HOLD&gt; — mark today's call as followed\n"
     "<b>PORTFOLIO</b> (or PORT / P) — show holdings\n"
     "<b>QUOTE</b> &lt;TICKER&gt; (or Q) — live price\n"
     "<b>STATUS</b> (or S) — system health\n"
@@ -246,15 +246,29 @@ _HELP = (
 )
 
 
+# What the user types → the recommendation family it resolves to. EXIT is an
+# alias for SELL: you exit a position, the advisor calls it EXIT-PARTIAL, and
+# either word should find it. The families themselves live in
+# supabase_client (_SELL_ACTIONS already spans EXIT-FULL, EXIT-PARTIAL,
+# TIGHTEN-SL, BOOK-PROFIT, SELL and the legacy PARTIAL-EXIT / FULL-EXIT).
+_EXECUTED_ALIASES = {
+    "BUY": "BUY",
+    "SELL": "SELL",
+    "EXIT": "SELL",
+    "HOLD": "HOLD",
+}
+
+
 def handle_executed(ticker: str, action_word: str) -> str:
-    """EXECUTED <TICKER> <BUY|SELL|HOLD> — mark today's call as followed.
+    """EXECUTED <TICKER> <BUY|SELL|EXIT|HOLD> — mark today's call as followed.
 
     The bot already auto-matches trades entered through BUY/SELL; this covers
     trades placed directly in the broker app, which is the common case.
     """
     ticker = ticker.upper().strip()
     action_word = action_word.upper().strip()
-    rec = supabase_client.match_and_mark_execution(ticker, action_word)
+    family = _EXECUTED_ALIASES.get(action_word, action_word)
+    rec = supabase_client.match_and_mark_execution(ticker, family)
     if not rec:
         return (
             f"❌ No {action_word} recommendation found for <b>{ticker}</b> today"
@@ -278,7 +292,7 @@ _TRADE_RE = re.compile(
 _QUOTE_RE = re.compile(r"^(QUOTE|Q)\s+([A-Z0-9&\-]+)\s*$", re.IGNORECASE)
 _HISTORY_RE = re.compile(r"^(HISTORY|HIST)\s+([A-Z0-9&\-]+)\s*$", re.IGNORECASE)
 _EXECUTED_RE = re.compile(
-    r"^EXECUTED\s+([A-Z0-9&\-\.]+)\s+(BUY|SELL|HOLD)\s*$", re.IGNORECASE,
+    r"^EXECUTED\s+([A-Z0-9&\-\.]+)\s+(BUY|SELL|EXIT|HOLD)\s*$", re.IGNORECASE,
 )
 
 
