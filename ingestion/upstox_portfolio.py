@@ -87,10 +87,21 @@ def _enrich_with_quotes(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     ind_quotes: dict[str, dict[str, Any]] = {}
     if ind_tickers:
+        # One batched Upstox LTP call covers every mapped IND ticker; anything
+        # without an instrument key silently drops to yfinance inside
+        # get_live_quotes, so name those explicitly here — an unmapped ticker
+        # is a config gap worth fixing, not a permanent fallback.
+        unmapped = [t for t in ind_tickers if not config.instrument_key_for(t)]
+        if unmapped:
+            log.warning("no Upstox instrument key for %s — falling back to yfinance; "
+                        "add them to config.INSTRUMENT_KEYS", ", ".join(sorted(unmapped)))
         try:
             ind_quotes = _run_async(upstox_market_data.get_live_quotes(ind_tickers))
         except Exception as exc:
             log.warning("batch quote (IND) failed (%s) — using avg_price fallback", exc)
+        else:
+            via_upstox = sum(1 for t in ind_tickers if (ind_quotes.get(t) or {}).get("source") == "upstox")
+            log.info("IND quotes: %d/%d via upstox (1 batched call)", via_upstox, len(ind_tickers))
 
     us_quotes: dict[str, dict[str, Any]] = {}
     if us_rows:

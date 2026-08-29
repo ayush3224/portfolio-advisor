@@ -86,12 +86,25 @@ PORTFOLIO_CACHE_TTL = 300   # 5 minutes
 # USD_INR_RATE is fetched once per process from yfinance INR=X, falling back
 # to 95.31 on failure. USD_TO_INR is kept as a backwards-compat alias for
 # callers that still import the old name.
-try:
-    from ingestion.market_context import fetch_usd_inr_rate as _fetch_usd_inr
-    USD_INR_RATE: float = _fetch_usd_inr()
-except Exception as _exc:  # pragma: no cover — import-time failures
-    log.warning("USD/INR fetch failed at config import: %s", _exc)
-    USD_INR_RATE = 95.31
+# Fetched here rather than in ingestion.market_context so config stays free of
+# project imports — market_context imports config, and the old direction made
+# the two circular (config would silently fall back to 95.31 whenever
+# market_context happened to be imported first).
+def fetch_usd_inr_rate() -> float:
+    """Latest USD/INR spot from yfinance. Falls back to 95.31 on any failure."""
+    try:
+        import yfinance as yf
+
+        hist = yf.Ticker("INR=X").history(period="1d")
+        if hist is None or hist.empty:
+            raise ValueError("empty INR=X history")
+        return round(float(hist["Close"].iloc[-1]), 2)
+    except Exception as exc:
+        log.warning("USD/INR fetch failed (%s) — using fallback 95.31", exc)
+        return 95.31
+
+
+USD_INR_RATE: float = fetch_usd_inr_rate()
 
 log.info("USD/INR rate: %s", USD_INR_RATE)
 USD_TO_INR = USD_INR_RATE  # legacy alias
@@ -166,14 +179,33 @@ INSTRUMENT_KEYS: dict[str, str] = {
     "NESTLEIND":  "NSE_EQ|INE239A01024",
     "ULTRACEMCO": "NSE_EQ|INE481G01011",
     "ADANIPORTS": "NSE_EQ|INE742F01042",
+    "ITC":        "NSE_EQ|INE154A01025",
+    "JIOFIN":     "NSE_EQ|INE758E01017",
+    "MANKINDPHARMA": "NSE_EQ|INE634S01028",
+    "TITAGARH":   "NSE_EQ|INE615H01020",
+    "IDEAFORGE":  "NSE_EQ|INE349Y01013",
+    # ETFs — instrument keys carry the fund ISIN (INF...), not an equity ISIN.
+    "GOLDBEES":   "NSE_EQ|INF204KB17I5",   # Nippon India ETF Gold BeES
+    "ICICIGOLD":  "NSE_EQ|INF109KC1NT3",   # ICICI Pru Gold ETF (NSE: GOLDIETF)
+    "ICICINIFTY": "NSE_EQ|INF109K012R6",   # ICICI Pru Nifty 50 ETF (NSE: NIFTYIETF)
+}
+
+
+# --- Index instrument keys (market context) ---
+# Upstox serves indices under the NSE_INDEX segment with a human-readable name
+# rather than an ISIN. Verified against the LTP endpoint 2026-08-29.
+INDEX_KEYS: dict[str, str] = {
+    "NIFTY50":   "NSE_INDEX|Nifty 50",
+    "BANKNIFTY": "NSE_INDEX|Nifty Bank",
 }
 
 
 def instrument_key_for(ticker: str | None) -> str | None:
-    """Return Upstox instrument_key for a ticker, or None if unmapped."""
+    """Return Upstox instrument_key for a ticker or index alias, or None."""
     if not ticker:
         return None
-    return INSTRUMENT_KEYS.get(ticker.upper())
+    t = ticker.upper()
+    return INSTRUMENT_KEYS.get(t) or INDEX_KEYS.get(t)
 
 
 # --- yfinance symbol overrides for NSE tickers ---

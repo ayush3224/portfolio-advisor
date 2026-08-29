@@ -4,12 +4,18 @@ Tier 1: RSI(14), the EMA 20/50 trend + fresh-crossover flag, volume vs its
 20-day average, a 20-day VWAP.
 Tier 2: Bollinger Bands (position + squeeze), MACD (12/26/9 crossover +
 histogram momentum), and pivot support/resistance with proximity.
-Both tiers roll up into a 0-6 signal-alignment score. All of it comes from
-60 days of daily OHLCV pulled via yfinance.
+Both tiers roll up into a 0-6 signal-alignment score, computed off the last
+60 daily candles.
+
+Data source: Indian tickers come from the Upstox v3 historical-candle API
+(Analytics Token), falling back to yfinance only when the ticker has no
+instrument key or Upstox errors. US tickers stay on yfinance. The `source`
+field on the result records which path served it.
 
 Every failure path returns None — this is enrichment, never a hard dependency,
-so a bad symbol or a yfinance hiccup must not sink a run. Results are cached
-in-process for one hour so a single run never re-fetches the same ticker.
+so a bad symbol or a data-provider hiccup must not sink a run. Results are
+cached in-process for one hour so a single run never re-fetches the same
+ticker.
 """
 
 from __future__ import annotations
@@ -23,6 +29,7 @@ import pandas_ta as ta
 import yfinance as yf
 
 import config
+from ingestion import upstox_market_data
 
 log = logging.getLogger(__name__)
 
@@ -45,11 +52,15 @@ def yf_symbol(ticker: str, market: str = "IND") -> str:
     return config.yf_ind_symbol(ticker) or ticker
 
 
-def _fetch_ohlcv(symbol: str) -> pd.DataFrame | None:
-    """60 daily candles, columns flattened, incomplete (NaN-close) rows dropped."""
+WINDOW = 60               # sessions the indicators are computed over
+_FETCH_DAYS = 90          # calendar days requested — ~62 sessions after weekends
+
+
+def _fetch_yfinance(symbol: str) -> pd.DataFrame | None:
+    """Daily candles from Yahoo, columns flattened, incomplete rows dropped."""
     df = yf.download(
         symbol,
-        period="60d",
+        period=f"{_FETCH_DAYS}d",
         interval="1d",
         auto_adjust=True,
         progress=False,
@@ -61,6 +72,39 @@ def _fetch_ohlcv(symbol: str) -> pd.DataFrame | None:
         df.columns = [c[0] for c in df.columns]
     df = df.dropna(subset=["Close", "Volume"])
     return df
+
+
+def _fetch_upstox(ticker: str) -> pd.DataFrame | None:
+    """Daily candles from the Upstox v3 historical-candle API."""
+    df = upstox_market_data.get_historical_candles_upstox(
+        ticker, interval="day", days=_FETCH_DAYS,
+    )
+    if df is None or df.empty:
+        return None
+    return df.dropna(subset=["Close", "Volume"])
+
+
+def _fetch_ohlcv(ticker: str, market: str) -> tuple[pd.DataFrame | None, str]:
+    """Return (last WINDOW sessions of OHLCV, source label).
+
+    IND: Upstox first, yfinance only as a fallback. US: yfinance."""
+    market = (market or "IND").upper()
+    df: pd.DataFrame | None = None
+    source = ""
+    if market == "IND":
+        df = _fetch_upstox(ticker)
+        if df is not None and len(df) >= MIN_ROWS:
+            source = "upstox"
+        else:
+            df = _fetch_yfinance(yf_symbol(ticker, market))
+            source = "yfinance_fallback"
+    else:
+        df = _fetch_yfinance(yf_symbol(ticker, market))
+        source = "yfinance"
+
+    if df is None or df.empty:
+        return None, source
+    return df.tail(WINDOW), source
 
 
 def _col(df: pd.DataFrame, prefix: str) -> pd.Series:
@@ -198,11 +242,12 @@ def compute_technicals(ticker: str, market: str = "IND") -> dict[str, Any] | Non
         return hit[1]
 
     try:
-        df = _fetch_ohlcv(symbol)
+        df, source = _fetch_ohlcv(ticker, market)
         if df is None or len(df) < MIN_ROWS:
-            log.warning("technicals %s: only %d usable rows — skipping",
-                        symbol, 0 if df is None else len(df))
+            log.warning("technicals %s (%s): only %d usable rows — skipping",
+                        ticker, symbol, 0 if df is None else len(df))
             return None
+        log.info("%s: technicals from %s (%d candles)", ticker, source, len(df))
 
         close = df["Close"]
 
@@ -311,6 +356,8 @@ def compute_technicals(ticker: str, market: str = "IND") -> dict[str, Any] | Non
             "alignment_label": label,
             "close": last_close,
             "prev_close": float(close.iloc[-2]),
+            "source": source,
+            "candles": len(df),
         }
         _cache[key] = (time.monotonic() + CACHE_TTL_SECONDS, result)
         return result

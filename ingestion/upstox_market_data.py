@@ -245,3 +245,85 @@ async def get_historical_candles(
         for c in fb:
             c["source"] = "yfinance"
     return fb or []
+
+
+# ---------------------------------------------------------------------------
+# Synchronous helpers (technicals / ad-hoc scripts)
+# ---------------------------------------------------------------------------
+# processing.technicals and one-off diagnostics run outside an event loop and
+# want a yfinance-shaped DataFrame, so these mirror the async API above with
+# plain `requests` instead of dragging asyncio into the caller.
+
+def get_historical_candles_upstox(
+    ticker: str, interval: str = "day", days: int = 60,
+) -> "pd.DataFrame | None":
+    """Daily OHLCV from Upstox v3 as a yfinance-shaped DataFrame.
+
+    Columns are Open/High/Low/Close/Volume indexed by timestamp ascending, so
+    the frame is a drop-in replacement for `yf.download(...)` output. Returns
+    None when the ticker has no instrument key or the API call fails —
+    callers fall back to yfinance.
+    """
+    import pandas as pd
+    import requests
+
+    instrument_key = config.instrument_key_for(ticker)
+    if not instrument_key:
+        log.warning("no instrument key for %s — Upstox candles unavailable", ticker)
+        return None
+    if not config.UPSTOX_ANALYTICS_TOKEN:
+        return None
+
+    unit = "days" if interval in ("day", "days") else interval
+    to_date = date.today()
+    # Pad the window: `days` is calendar days but only ~5/7 are sessions.
+    from_date = to_date - timedelta(days=days + 10)
+    encoded = instrument_key.replace("|", "%7C")
+    url = (
+        f"{_BASE}/historical-candle/{encoded}/{unit}/1/"
+        f"{to_date.isoformat()}/{from_date.isoformat()}"
+    )
+    try:
+        resp = requests.get(url, headers=_headers(), timeout=_TIMEOUT)
+        if resp.status_code != 200:
+            log.warning("Upstox candles %s → HTTP %s", ticker, resp.status_code)
+            return None
+        candles = (resp.json().get("data") or {}).get("candles") or []
+    except Exception as exc:
+        log.warning("Upstox candles %s failed: %s", ticker, exc)
+        return None
+    if not candles:
+        return None
+
+    # Upstox candle: [timestamp, open, high, low, close, volume, oi]
+    df = pd.DataFrame(candles, columns=[
+        "timestamp", "open", "high", "low", "close", "volume", "oi",
+    ])
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, format="ISO8601")
+    df = df.sort_values("timestamp").set_index("timestamp")
+    df = df.rename(columns={
+        "open": "Open", "high": "High", "low": "Low",
+        "close": "Close", "volume": "Volume",
+    })
+    return df[["Open", "High", "Low", "Close", "Volume"]].astype(float)
+
+
+def get_live_quote_sync(ticker: str) -> dict[str, Any] | None:
+    """Blocking single-ticker LTP — same payload shape as get_live_quote()."""
+    return _run_sync(get_live_quote(ticker))
+
+
+def get_live_quotes_sync(tickers: list[str]) -> dict[str, dict[str, Any]]:
+    """Blocking batch LTP — one Upstox call for every keyed ticker."""
+    return _run_sync(get_live_quotes(tickers))
+
+
+def _run_sync(coro: Any) -> Any:
+    """Run a coroutine from sync code, even if a loop is already running."""
+    import concurrent.futures
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        return ex.submit(asyncio.run, coro).result()

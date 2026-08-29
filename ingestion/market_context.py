@@ -1,7 +1,11 @@
 """Macro / market context — Nifty, BankNifty, FII/DII flows, GIFT Nifty proxy.
 
-Primary source: yfinance (reliable, no auth). NSE/Moneycontrol scrapers replaced
-because the public endpoints either bot-block or return empty payloads.
+Primary source for the indices: Upstox (Analytics Token) — same feed the
+portfolio and technicals now use, so the Nifty level in the prompt matches the
+level the holdings were priced against. yfinance stays as the fallback when the
+token is missing or Upstox errors, and still serves USD/INR. NSE/Moneycontrol
+scrapers were replaced because the public endpoints either bot-block or return
+empty payloads.
 
 Contract: every function returns either a populated dict or — for the index
 helpers — a degraded dict with explicit None fields. We never return None
@@ -17,7 +21,12 @@ from typing import Any
 import requests
 import yfinance as yf
 
+import config
+from ingestion import upstox_market_data
+
 log = logging.getLogger(__name__)
+
+_UPSTOX_LTP_URL = "https://api.upstox.com/v3/market-quote/ltp"
 
 _NSE_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -26,6 +35,97 @@ _NSE_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
     "Referer": "https://www.nseindia.com/",
 }
+
+
+def fetch_nifty_from_upstox() -> dict[str, Any] | None:
+    """Nifty 50 + Bank Nifty spot in a single Upstox LTP call.
+
+    The v3 LTP payload carries `last_price` and `cp` (previous close) but no
+    net_change field, so the percentage move is derived from those two.
+    Returns None when the token is missing or the call fails."""
+    if not config.UPSTOX_ANALYTICS_TOKEN:
+        return None
+    keys = f"{config.INDEX_KEYS['NIFTY50']},{config.INDEX_KEYS['BANKNIFTY']}"
+    try:
+        resp = requests.get(
+            _UPSTOX_LTP_URL,
+            params={"instrument_key": keys},
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {config.UPSTOX_ANALYTICS_TOKEN}",
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json().get("data") or {}
+    except Exception as exc:
+        log.warning("Upstox index LTP failed: %s", exc)
+        return None
+
+    by_key = {v.get("instrument_token"): v for v in data.values()}
+    nifty = by_key.get(config.INDEX_KEYS["NIFTY50"]) or {}
+    banknifty = by_key.get(config.INDEX_KEYS["BANKNIFTY"]) or {}
+    if not nifty.get("last_price"):
+        return None
+
+    def _pct(entry: dict[str, Any]) -> float | None:
+        ltp, prev = entry.get("last_price"), entry.get("cp")
+        if not ltp or not prev:
+            return None
+        return round((float(ltp) - float(prev)) / float(prev) * 100, 2)
+
+    return {
+        "nifty_spot": nifty.get("last_price"),
+        "nifty_prev_close": nifty.get("cp"),
+        "nifty_change_pct": _pct(nifty),
+        "banknifty_spot": banknifty.get("last_price"),
+        "banknifty_prev_close": banknifty.get("cp"),
+        "banknifty_change_pct": _pct(banknifty),
+        "source": "upstox",
+    }
+
+
+def _upstox_index_block(alias: str, label: str) -> dict[str, Any] | None:
+    """Today's OHLC for an index from Upstox daily candles + live LTP.
+
+    Candles give open/high/low and the previous session's close (so gap_pct is
+    real, not derived); the LTP call keeps `spot` live during market hours."""
+    try:
+        df = upstox_market_data.get_historical_candles_upstox(alias, days=10)
+        if df is None or len(df) < 2:
+            log.warning("%s: Upstox returned <2 candles", label)
+            return None
+        today, prev = df.iloc[-1], df.iloc[-2]
+        prev_close = float(prev["Close"])
+        spot = float(today["Close"])
+        quote = upstox_market_data.get_live_quote_sync(alias)
+        if quote and quote.get("ltp"):
+            spot = float(quote["ltp"])
+        return {
+            "spot": round(spot, 2),
+            "prev_close": round(prev_close, 2),
+            "open": round(float(today["Open"]), 2),
+            "high": round(float(today["High"]), 2),
+            "low": round(float(today["Low"]), 2),
+            "gap_pct": round((float(today["Open"]) - prev_close) / prev_close * 100, 2) if prev_close else 0.0,
+            "change_pct": round((spot - prev_close) / prev_close * 100, 2) if prev_close else 0.0,
+            "source": "upstox",
+        }
+    except Exception as exc:
+        log.warning("%s Upstox fetch failed: %s", label, exc)
+        return None
+
+
+def _index_block(alias: str, yf_symbol: str, label: str) -> dict[str, Any] | None:
+    """Upstox first, yfinance as fallback — same shape either way."""
+    block = _upstox_index_block(alias, label)
+    if block:
+        return block
+    log.info("%s: falling back to yfinance %s", label, yf_symbol)
+    block = _yf_index_block(yf_symbol, label)
+    if block:
+        block["source"] = "yfinance"
+    return block
 
 
 def _yf_index_block(symbol: str, label: str) -> dict[str, Any] | None:
@@ -60,7 +160,7 @@ def _yf_index_block(symbol: str, label: str) -> dict[str, Any] | None:
 
 def fetch_nifty_spot() -> dict[str, Any] | None:
     """Nifty 50 today + prev-day comparison."""
-    block = _yf_index_block("^NSEI", "Nifty 50")
+    block = _index_block("NIFTY50", "^NSEI", "Nifty 50")
     if not block:
         return None
     return {
@@ -71,12 +171,13 @@ def fetch_nifty_spot() -> dict[str, Any] | None:
         "nifty_low": block["low"],
         "nifty_gap_pct": block["gap_pct"],
         "nifty_change_pct": block["change_pct"],
+        "nifty_source": block.get("source"),
     }
 
 
 def fetch_banknifty_spot() -> dict[str, Any] | None:
     """Bank Nifty today + prev-day comparison."""
-    block = _yf_index_block("^NSEBANK", "Bank Nifty")
+    block = _index_block("BANKNIFTY", "^NSEBANK", "Bank Nifty")
     if not block:
         return None
     return {
@@ -87,18 +188,19 @@ def fetch_banknifty_spot() -> dict[str, Any] | None:
         "banknifty_low": block["low"],
         "banknifty_gap_pct": block["gap_pct"],
         "banknifty_change_pct": block["change_pct"],
+        "banknifty_source": block.get("source"),
     }
 
 
 def fetch_sgx_nifty_proxy() -> dict[str, Any] | None:
     """GIFT Nifty proxy. Yahoo doesn't host SGX/GIFT directly, so we use the
     Nifty 50 spot itself as a same-trend proxy and label it explicitly."""
-    nifty = _yf_index_block("^NSEI", "GIFT Nifty proxy")
+    nifty = _index_block("NIFTY50", "^NSEI", "GIFT Nifty proxy")
     if not nifty:
         return None
     return {
         "proxy": True,
-        "source": "^NSEI",
+        "source": nifty.get("source", "^NSEI"),
         "last": nifty["spot"],
         "change_pct": nifty["change_pct"],
         "note": "GIFT Nifty proxy — using Nifty 50 spot",
@@ -154,19 +256,9 @@ def fetch_fii_dii_flows() -> dict[str, Any]:
 
 
 def fetch_usd_inr_rate() -> float:
-    """Latest USD/INR spot from yfinance. Falls back to 95.31 on any failure.
-
-    Called once at config import time so every cron invocation gets a fresh
-    rate without hitting yfinance per-conversion.
-    """
-    try:
-        hist = yf.Ticker("INR=X").history(period="1d")
-        if hist is None or hist.empty:
-            raise ValueError("empty INR=X history")
-        return round(float(hist["Close"].iloc[-1]), 2)
-    except Exception as exc:
-        log.warning("USD/INR fetch failed (%s) — using fallback 95.31", exc)
-        return 95.31
+    """Latest USD/INR spot. Delegates to config, which owns the single fetch
+    performed at import time (kept here for callers using the old name)."""
+    return config.fetch_usd_inr_rate()
 
 
 def get_market_context() -> dict[str, Any]:

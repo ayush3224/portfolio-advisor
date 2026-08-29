@@ -32,7 +32,7 @@ def _ticker_from_instrument_key(instrument_key: str) -> str | None:
 
 def _yf_last_close(ticker: str) -> float | None:
     try:
-        hist = yf.Ticker(f"{ticker.upper()}.NS").history(period="2d", auto_adjust=False)
+        hist = yf.Ticker(config.yf_ind_symbol(ticker)).history(period="2d", auto_adjust=False)
         if hist is None or hist.empty:
             return None
         return round(float(hist["Close"].iloc[-1]), 2)
@@ -43,7 +43,7 @@ def _yf_last_close(ticker: str) -> float | None:
 
 def _yf_price_block(ticker: str) -> dict[str, Any] | None:
     try:
-        t = yf.Ticker(f"{ticker.upper()}.NS")
+        t = yf.Ticker(config.yf_ind_symbol(ticker))
         hist = t.history(period="2d", auto_adjust=False)
         if hist is None or hist.empty:
             return None
