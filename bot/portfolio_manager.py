@@ -25,17 +25,26 @@ from storage import supabase_client
 log = logging.getLogger(__name__)
 
 
-# Common US tickers we recognise without an explicit market flag.
-# Adding to this list is cheap; the source of truth is still the `market`
-# column stored on each holding row.
+# US ETFs. These carry no exchange suffix when typed, look nothing like an
+# NSE symbol, and are the names most likely to be entered bare — a bare ETF
+# ticker defaulting to IND books a dollar price as rupees (this is what put
+# SPDR into holdings at "₹428.60"). None of them may ever resolve to IND.
+_US_ETFS = {
+    "SPDR", "SPY", "QQQ", "VTI", "IWM", "ARKK",
+    "GLD", "SLV", "IAU", "AAAU", "GDX",
+    "SOXX", "PSI", "XLF", "XLE", "XLK",
+}
+
+# Common US single names we recognise without an explicit market flag.
+# Adding to this list is cheap; for anything not listed, the `market` column
+# on an existing holding row still decides.
 _KNOWN_US_TICKERS = {
     "AAPL", "MSFT", "AMZN", "GOOG", "GOOGL", "META", "NVDA", "TSLA",
     "NFLX", "AMD", "INTC", "IBM", "ORCL", "CRM", "ADBE", "PEP", "KO",
     "WMT", "JPM", "BAC", "GS", "MS", "C", "BRK.A", "BRK.B", "BRK-B",
     "V", "MA", "DIS", "HD", "MCD", "NKE", "XOM", "CVX", "BP", "BKR",
-    "DUK", "PLTR", "PANW", "SOXX", "EQIX", "RTX", "TSM", "PSI",
-    "IBKR", "IAU", "GLD", "SLV", "AAAU",
-}
+    "DUK", "PLTR", "PANW", "EQIX", "RTX", "TSM", "IBKR",
+} | _US_ETFS
 
 
 def _now_iso() -> str:
@@ -77,13 +86,20 @@ def _market_from_holdings(ticker: str) -> str | None:
 def detect_market(ticker: str) -> str:
     """Resolve a ticker to 'IND' or 'US'.
 
-    Order: Upstox instrument key (definitively NSE) → the `market` column on
-    an existing holding → the known-US set → default IND. For a genuinely
-    ambiguous new symbol, callers should pass an explicit market via BUY-US.
+    Order: Upstox instrument key (definitively NSE) → the US ETF list → the
+    `market` column on an existing holding → the known-US set → default IND.
+    For a genuinely ambiguous new symbol, callers should pass an explicit
+    market via BUY-US.
     """
     t = ticker.upper().strip()
     if config.instrument_key_for(t):
         return "IND"
+    # The ETF list outranks the holdings row on purpose. A row reading IND for
+    # one of these *is* the mislabelling we are preventing, so letting it win
+    # would keep re-booking dollar prices as rupees for as long as the bad
+    # position stays open.
+    if t in _US_ETFS:
+        return "US"
     held = _market_from_holdings(t)
     if held in ("IND", "US"):
         return held
@@ -136,7 +152,8 @@ US_PRICE_SANITY_LIMIT = 5000.0
 # GOOGL is here defensively (post-split it trades ~$200, but the list is
 # cheap insurance against a future split-adjusted spike).
 HIGH_PRICE_US_TICKERS = {
-    "EQIX", "BRK-B", "BRK.B", "BRK-A", "BRK.A", "GOOGL", "NVR", "BKNG",
+    "EQIX", "BRK-B", "BRK.B", "BRK-A", "BRK.A", "GOOG", "GOOGL",
+    "NVR", "BKNG",
 }
 
 # Shown on HELP and on every US BUY confirmation — the whole class of bug
