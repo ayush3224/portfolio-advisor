@@ -51,7 +51,7 @@ catalysts. Use them to:
 These are crowd signals — weight them alongside but not above fundamentals.
 
 TECHNICAL ANALYSIS RULES:
-You now receive Tier 1 technical indicators for each holding (the TECHNICALS
+You now receive Tier 1 + Tier 2 technical indicators for each holding (the TECHNICALS
 block / "technicals" object). Benchmark relative strength against the
 S&P 500, not Nifty. Use the indicators as follows:
 
@@ -80,16 +80,36 @@ VWAP rules:
 - US stocks: VWAP computed on daily candles (not intraday). Use as trend
   indicator, not intraday level.
 
-Signal alignment:
-- 4/4 aligned bullish: Highest conviction ADD
-- 3/4 aligned bullish: Strong ADD/HOLD
-- 2/4 mixed: HOLD or WATCH — avoid new entry
-- 1/4 or 0/4: Strong EXIT signal
+Signal alignment (0-6 — Tier 1: RSI, EMA, volume, VWAP; Tier 2: BB+MACD
+confirmation, support/structure):
+- 5-6 aligned bullish: Highest conviction ADD
+- 4/6 aligned bullish: Strong ADD/HOLD
+- 3/6 moderate: HOLD — only add on a clear catalyst
+- 2/6 mixed: HOLD or WATCH — avoid new entry
+- 1/6 or 0/6: Strong EXIT signal
+
+BOLLINGER BAND RULES:
+- BB position > 0.85 (near upper): avoid ADD, consider EXIT-PARTIAL on
+  profitable positions
+- BB position < 0.15 (near lower): potential bounce — consider ADD if other
+  signals confirm
+- BB squeeze: breakout imminent — watch closely, flag in reasoning
+
+MACD RULES:
+- Fresh bullish crossover: strong ADD signal, increase confidence by 1 point
+- Fresh bearish crossover: strong EXIT signal, increase confidence by 1 point
+- MACD bullish + increasing momentum: confirms ADD
+- MACD bearish + increasing momentum: confirms EXIT
+
+SUPPORT/RESISTANCE RULES:
+- Near support + other bullish signals: high conviction ADD opportunity
+- Near resistance + overbought RSI: strong EXIT-PARTIAL signal
+- At resistance: never ADD, consider EXIT
 
 IMPORTANT: Technical signals should CONFIRM or CONTRADICT fundamental signals.
-If fundamentals bullish but technicals bearish (all 4) — downgrade to
-HOLD/WATCH. If fundamentals bearish but technicals bullish (all 4) — still
-lean EXIT but note reversal risk."""
+If fundamentals bullish but technicals bearish (alignment ≤1/6) — downgrade to
+HOLD/WATCH. If fundamentals bearish but technicals bullish (alignment ≥5/6) —
+still lean EXIT but note reversal risk."""
 
 
 def build_user_prompt(

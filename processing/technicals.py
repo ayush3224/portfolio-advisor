@@ -1,8 +1,11 @@
 """Tier 1 technical indicators for a single ticker (Indian or US).
 
-Computes RSI(14), the EMA 20/50 trend + fresh-crossover flag, volume vs its
-20-day average, a 20-day VWAP and a 0-4 signal-alignment score from 60 days of
-daily OHLCV pulled via yfinance.
+Tier 1: RSI(14), the EMA 20/50 trend + fresh-crossover flag, volume vs its
+20-day average, a 20-day VWAP.
+Tier 2: Bollinger Bands (position + squeeze), MACD (12/26/9 crossover +
+histogram momentum), and pivot support/resistance with proximity.
+Both tiers roll up into a 0-6 signal-alignment score. All of it comes from
+60 days of daily OHLCV pulled via yfinance.
 
 Every failure path returns None — this is enrichment, never a hard dependency,
 so a bad symbol or a yfinance hiccup must not sink a run. Results are cached
@@ -24,7 +27,8 @@ import config
 log = logging.getLogger(__name__)
 
 CACHE_TTL_SECONDS = 3600  # 1 hour — a daily-candle indicator set is stable intraday
-MIN_ROWS = 20             # below this RSI/EMA20/volume-avg are meaningless
+MIN_ROWS = 20             # below this RSI/EMA20/BB/volume-avg are meaningless
+MIN_ROWS_MACD = 35        # MACD(12,26,9) needs 26+9 candles before it reads
 
 # (SYMBOL, MARKET) -> (monotonic_expiry, payload)
 _cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
@@ -59,6 +63,18 @@ def _fetch_ohlcv(symbol: str) -> pd.DataFrame | None:
     return df
 
 
+def _col(df: pd.DataFrame, prefix: str) -> pd.Series:
+    """First column starting with `prefix`.
+
+    pandas-ta suffixes indicator columns with their parameters and the exact
+    suffix moves between versions (BBU_20_2.0 vs BBU_20_2.0_2.0), so match on
+    the stable prefix instead of a hardcoded name."""
+    for name in df.columns:
+        if str(name).startswith(prefix):
+            return df[name]
+    raise KeyError(f"no column starting with {prefix!r} in {list(df.columns)}")
+
+
 def _rsi_signal(rsi: float) -> str:
     if rsi > 70:
         return "overbought"
@@ -87,18 +103,61 @@ def _vwap_position(close: float, vwap: float) -> str:
     return "above" if close > vwap else "below"
 
 
+def _crossed_recently(diff: pd.Series, bars: int = 3) -> int:
+    """Sign flip of `diff` within the last `bars` candles.
+
+    Returns +1 for an up-cross (fast crossed above slow), -1 for a down-cross,
+    0 for no crossover. Needs bars+1 points to look across bars intervals."""
+    diff = diff.dropna()
+    if len(diff) < bars + 1:
+        return 0
+    signs = [1 if v > 0 else -1 for v in diff.iloc[-(bars + 1):]]
+    for i in range(len(signs) - 1):
+        if signs[i] != signs[i + 1]:
+            return signs[-1]
+    return 0
+
+
 def _fresh_crossover(ema20: pd.Series, ema50: pd.Series) -> bool:
     """True if EMA20 crossed EMA50 within the last 3 candles."""
-    diff = (ema20 - ema50).dropna()
-    if len(diff) < 4:
-        return False
-    signs = [1 if v > 0 else -1 for v in diff.iloc[-4:]]
-    return any(signs[i] != signs[i + 1] for i in range(len(signs) - 1))
+    return _crossed_recently(ema20 - ema50) != 0
+
+
+def _bb_signal(bb_position: float) -> str:
+    """Band position → label.
+
+    The spec's bands overlap (0.4-0.6 'neutral' sits inside both halves), so
+    'neutral' is tested before the halves — otherwise it could never fire."""
+    if bb_position > 0.85:
+        return "overbought"
+    if bb_position < 0.15:
+        return "oversold"
+    if 0.4 <= bb_position <= 0.6:
+        return "neutral"
+    if bb_position >= 0.5:
+        return "upper_half"
+    return "lower_half"
+
+
+def _sr_signal(dist_resistance: float, dist_support: float) -> str:
+    """Proximity label — the tighter 'at_*' bands are tested first."""
+    if dist_resistance < 0.5:
+        return "at_resistance"
+    if dist_support < 0.5:
+        return "at_support"
+    if dist_resistance < 2:
+        return "near_resistance"
+    if dist_support < 2:
+        return "near_support"
+    return "middle"
 
 
 def _alignment(rsi_signal: str, ema_signal: str, volume_signal: str,
-               vwap_position: str) -> tuple[int, str]:
+               vwap_position: str, bb_signal: str, bb_squeeze: bool,
+               macd_signal: str, sr_signal: str) -> tuple[int, str]:
+    """Tier 1 (0-4) + Tier 2 (0-2) → 0-6 alignment score and its label."""
     score = 0
+    # Tier 1
     if rsi_signal in ("bullish", "oversold"):
         score += 1
     if ema_signal == "bullish":
@@ -107,10 +166,20 @@ def _alignment(rsi_signal: str, ema_signal: str, volume_signal: str,
         score += 1
     if vwap_position == "above":
         score += 1
-    if score == 4:
+    # Tier 2
+    if (bb_signal in ("oversold", "upper_half")
+            and macd_signal in ("bullish", "bullish_crossover")):
+        score += 1
+    if (sr_signal in ("near_support", "at_support")
+            or (sr_signal == "middle" and not bb_squeeze)):
+        score += 1
+
+    if score >= 5:
         label = "strong bullish"
-    elif score == 3:
+    elif score == 4:
         label = "bullish"
+    elif score == 3:
+        label = "moderate"
     elif score == 2:
         label = "mixed"
     else:
@@ -163,7 +232,52 @@ def compute_technicals(ticker: str, market: str = "IND") -> dict[str, Any] | Non
         last_close = float(close.iloc[-1])
         vwap_position = _vwap_position(last_close, vwap)
 
-        score, label = _alignment(rsi_signal, ema_signal, volume_signal, vwap_position)
+        # --- Tier 2 ---------------------------------------------------------
+        # Bollinger Bands (20, 2σ): position within the band + squeeze
+        bb = ta.bbands(close, length=20, std=2)
+        bb_upper = float(_col(bb, "BBU_").iloc[-1])
+        bb_middle = float(_col(bb, "BBM_").iloc[-1])
+        bb_lower = float(_col(bb, "BBL_").iloc[-1])
+        band_range = bb_upper - bb_lower
+        bb_position = (last_close - bb_lower) / band_range if band_range else 0.5
+        bb_signal = _bb_signal(bb_position)
+
+        width_series = ((_col(bb, "BBU_") - _col(bb, "BBL_")) / _col(bb, "BBM_")).dropna()
+        band_width = float(width_series.iloc[-1])
+        avg_width = float(width_series.tail(20).mean())
+        bb_squeeze = bool(avg_width and band_width < avg_width * 0.75)
+
+        # MACD (12, 26, 9): crossover state + histogram momentum.
+        # Short-history tickers keep their Tier 1 + BB/S&R readings rather than
+        # losing the whole block — MACD just reports as unavailable.
+        macd_line = signal_line = histogram = None
+        macd_signal = macd_momentum = "unavailable"
+        if len(df) >= MIN_ROWS_MACD:
+            macd_df = ta.macd(close, fast=12, slow=26, signal=9)
+            macd_line = float(_col(macd_df, "MACD_").iloc[-1])
+            signal_line = float(_col(macd_df, "MACDs_").iloc[-1])
+            hist_series = _col(macd_df, "MACDh_").dropna()
+            histogram = float(hist_series.iloc[-1])
+            prev_histogram = float(hist_series.iloc[-2]) if len(hist_series) >= 2 else histogram
+
+            cross = _crossed_recently(_col(macd_df, "MACD_") - _col(macd_df, "MACDs_"))
+            if cross > 0:
+                macd_signal = "bullish_crossover"
+            elif cross < 0:
+                macd_signal = "bearish_crossover"
+            else:
+                macd_signal = "bullish" if macd_line > signal_line else "bearish"
+            macd_momentum = "increasing" if abs(histogram) > abs(prev_histogram) else "decreasing"
+
+        # Support / resistance: pivot quantiles over the 60-day window
+        resistance = float(df["High"].tail(60).quantile(0.90))
+        support = float(close.tail(60).quantile(0.10))
+        distance_to_resistance = (resistance - last_close) / last_close * 100
+        distance_to_support = (last_close - support) / last_close * 100
+        sr_signal = _sr_signal(distance_to_resistance, distance_to_support)
+
+        score, label = _alignment(rsi_signal, ema_signal, volume_signal, vwap_position,
+                                  bb_signal, bb_squeeze, macd_signal, sr_signal)
 
         result = {
             "rsi": rsi,
@@ -176,6 +290,23 @@ def compute_technicals(ticker: str, market: str = "IND") -> dict[str, Any] | Non
             "volume_signal": volume_signal,
             "vwap": vwap,
             "vwap_position": vwap_position,
+            "bb_upper": bb_upper,
+            "bb_middle": bb_middle,
+            "bb_lower": bb_lower,
+            "bb_position": bb_position,
+            "bb_signal": bb_signal,
+            "bb_squeeze": bb_squeeze,
+            "band_width": band_width,
+            "macd": macd_line,
+            "macd_signal_line": signal_line,
+            "macd_histogram": histogram,
+            "macd_signal": macd_signal,
+            "macd_momentum": macd_momentum,
+            "resistance": resistance,
+            "support": support,
+            "distance_to_resistance": distance_to_resistance,
+            "distance_to_support": distance_to_support,
+            "sr_signal": sr_signal,
             "signal_alignment": score,
             "alignment_label": label,
             "close": last_close,
@@ -193,6 +324,10 @@ def format_technicals_block(tech: dict[str, Any] | None) -> str:
     if not tech:
         return ""
     crossover = " ⚡ FRESH CROSSOVER" if tech["ema_crossover"] else ""
+    squeeze = "  ⚡ SQUEEZE — breakout imminent" if tech.get("bb_squeeze") else ""
+    macd_cross = ("  ⚡ FRESH CROSSOVER"
+                  if tech.get("macd_signal") in ("bullish_crossover", "bearish_crossover")
+                  else "")
     return "\n".join([
         "TECHNICALS:",
         f"RSI(14): {tech['rsi']:.1f} — {tech['rsi_signal']}",
@@ -200,7 +335,12 @@ def format_technicals_block(tech: dict[str, Any] | None) -> str:
         f"{tech['ema20']:.2f} vs {tech['ema50']:.2f}{crossover}",
         f"Volume: {tech['volume_ratio']:.1f}x avg — {tech['volume_signal']}",
         f"VWAP: Price {tech['vwap_position']} VWAP ({tech['vwap']:.2f})",
-        f"Signal alignment: {tech['signal_alignment']}/4 — {tech['alignment_label']}",
+        f"BB: {tech['bb_position']:.2f} — {tech['bb_signal']}{squeeze}",
+        f"MACD: {tech['macd_signal']} | momentum {tech['macd_momentum']}{macd_cross}"
+        + ("" if tech.get("macd") is None else f" (hist {tech['macd_histogram']:+.2f})"),
+        f"S&R: {tech['sr_signal']} | resistance {tech['resistance']:.2f} "
+        f"support {tech['support']:.2f}",
+        f"Signal alignment: {tech['signal_alignment']}/6 — {tech['alignment_label']}",
     ])
 
 
