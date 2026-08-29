@@ -41,6 +41,63 @@ def _run_async(coro: Any) -> Any:
 log = logging.getLogger(__name__)
 
 
+def _currency_totals(holdings: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate a mixed IND/US holdings list without ever adding ₹ to $.
+
+    Each region is summed in its own currency first; the US subtotal is only
+    then converted at config.USD_INR_RATE to form the combined INR total.
+    Summing `current_value` straight across both markets — which is what this
+    used to do — undercounts every US rupee by roughly the FX rate.
+
+    The INR-denominated keys (`total_value`/`total_cost`/`total_pnl`) are the
+    ones every downstream caller already renders with a ₹ sign, so they now
+    carry a genuinely INR number.
+    """
+    ind = [h for h in holdings if (h.get("market") or "IND").upper() == "IND"]
+    us = [h for h in holdings if (h.get("market") or "").upper() == "US"]
+
+    ind_value_inr = sum(float(h.get("current_value") or 0) for h in ind)
+    ind_cost_inr = sum(float(h.get("cost_value") or 0) for h in ind)
+    ind_pnl_inr = ind_value_inr - ind_cost_inr
+
+    us_value_usd = sum(float(h.get("current_value") or 0) for h in us)
+    us_cost_usd = sum(float(h.get("cost_value") or 0) for h in us)
+    us_pnl_usd = us_value_usd - us_cost_usd
+
+    rate = float(config.USD_INR_RATE)
+    us_value_inr = us_value_usd * rate
+    us_cost_inr = us_cost_usd * rate
+    us_pnl_inr = us_pnl_usd * rate
+
+    total_value_inr = ind_value_inr + us_value_inr
+    total_cost_inr = ind_cost_inr + us_cost_inr
+    total_pnl_inr = ind_pnl_inr + us_pnl_inr
+
+    def pct(pnl: float, cost: float) -> float:
+        return round(pnl / cost * 100, 4) if cost else 0.0
+
+    return {
+        "usd_inr_rate": rate,
+        "ind_count": len(ind),
+        "us_count": len(us),
+        "ind_value_inr": round(ind_value_inr, 2),
+        "ind_cost_inr": round(ind_cost_inr, 2),
+        "ind_pnl_inr": round(ind_pnl_inr, 2),
+        "ind_pnl_pct": pct(ind_pnl_inr, ind_cost_inr),
+        "us_value_usd": round(us_value_usd, 2),
+        "us_cost_usd": round(us_cost_usd, 2),
+        "us_pnl_usd": round(us_pnl_usd, 2),
+        "us_pnl_pct": pct(us_pnl_usd, us_cost_usd),
+        "us_value_inr": round(us_value_inr, 2),
+        "us_cost_inr": round(us_cost_inr, 2),
+        "us_pnl_inr": round(us_pnl_inr, 2),
+        "total_value_inr": round(total_value_inr, 2),
+        "total_cost_inr": round(total_cost_inr, 2),
+        "total_pnl_inr": round(total_pnl_inr, 2),
+        "total_pnl_pct": pct(total_pnl_inr, total_cost_inr),
+    }
+
+
 def _empty_portfolio() -> dict[str, Any]:
     return {
         "holdings": [],
@@ -53,6 +110,7 @@ def _empty_portfolio() -> dict[str, Any]:
         "used_margin": 0.0,
         "realised_pnl_today": 0.0,
         "sector_allocation": {},
+        **_currency_totals([]),
     }
 
 
@@ -158,9 +216,11 @@ def _enrich_with_quotes(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if market == "US":
             unrealised_pnl_inr = round(unrealised_pnl * config.USD_INR_RATE, 2)
             current_value_inr = round(current_value * config.USD_INR_RATE, 2)
+            cost_value_inr = round(cost * config.USD_INR_RATE, 2)
         else:
             unrealised_pnl_inr = unrealised_pnl
             current_value_inr = current_value
+            cost_value_inr = round(cost, 2)
         enriched.append({
             "trading_symbol": ticker,
             "instrument_token": config.instrument_key_for(ticker) if market == "IND" else None,
@@ -178,6 +238,7 @@ def _enrich_with_quotes(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "current_value": current_value,
             "current_value_inr": current_value_inr,
             "cost_value": round(cost, 2),
+            "cost_value_inr": cost_value_inr,
             "unrealised_pnl": unrealised_pnl,
             "unrealised_pnl_inr": unrealised_pnl_inr,
             "unrealised_pnl_pct": unrealised_pnl_pct,
@@ -205,18 +266,16 @@ def fetch_portfolio(market: str | None = None) -> dict[str, Any]:
         return _empty_portfolio()
 
     enriched = _enrich_with_quotes(rows)
-    total_cost = sum(h["cost_value"] for h in enriched)
-    total_value = sum(h["current_value"] for h in enriched)
-    total_pnl = round(total_value - total_cost, 2)
-    total_pnl_pct = round((total_pnl / total_cost * 100), 4) if total_cost else 0.0
+    totals = _currency_totals(enriched)
 
     return {
         "holdings": enriched,
         "positions": [],
-        "total_value": round(total_value, 2),
-        "total_cost": round(total_cost, 2),
-        "total_pnl": total_pnl,
-        "total_pnl_pct": total_pnl_pct,
+        # Combined figures are INR — the US leg is converted, never added raw.
+        "total_value": totals["total_value_inr"],
+        "total_cost": totals["total_cost_inr"],
+        "total_pnl": totals["total_pnl_inr"],
+        **totals,
         "available_margin": 0.0,
         "used_margin": 0.0,
         "realised_pnl_today": 0.0,

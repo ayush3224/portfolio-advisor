@@ -408,6 +408,22 @@ async def close_position(ticker: str, quantity: float, price: float) -> dict[str
 
 
 def get_portfolio() -> dict[str, Any]:
+    """Live portfolio for the PORTFOLIO reply, split by market.
+
+    IND and US holdings are aggregated in their own currency and only combined
+    after the US leg is converted at config.USD_INR_RATE — adding a dollar
+    subtotal straight onto a rupee one understates the portfolio by roughly
+    the FX rate. The aggregation lives in upstox_portfolio._currency_totals so
+    the schedulers, which render the same `total_value` with a ₹ sign, get the
+    corrected number too.
+
+    Alongside `holdings` the dict carries:
+      ind_value_inr / ind_cost_inr / ind_pnl_inr / ind_pnl_pct
+      us_value_usd  / us_cost_usd  / us_pnl_usd  / us_pnl_pct
+      us_value_inr  / us_cost_inr  / us_pnl_inr
+      total_value_inr / total_cost_inr / total_pnl_inr / total_pnl_pct
+      usd_inr_rate, ind_count, us_count
+    """
     return upstox_portfolio.fetch_portfolio()
 
 

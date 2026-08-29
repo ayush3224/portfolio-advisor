@@ -36,11 +36,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     text = update.message.text.strip()
     log.info("CMD from %s: %s", chat_id, text[:120])
     try:
-        reply = await command_handler.process(text)
+        replies = await command_handler.process(text)
     except Exception as exc:
         log.exception("command_handler crashed: %s", exc)
-        reply = "❌ Internal error. Check bot logs."
-    await update.message.reply_text(reply, parse_mode="HTML")
+        replies = ["❌ Internal error. Check bot logs."]
+    # A long PORTFOLIO comes back as two messages; everything else is one.
+    for reply in replies:
+        await update.message.reply_text(reply, parse_mode="HTML")
 
 
 def main() -> None:

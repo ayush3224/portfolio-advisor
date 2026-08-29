@@ -16,6 +16,7 @@ from typing import Any
 
 import pytz
 
+import config
 from bot import portfolio_manager
 from storage import supabase_client
 
@@ -122,61 +123,108 @@ def _format_sell(reply: dict[str, Any]) -> str:
     return body
 
 
-def _format_section(rows: list[dict[str, Any]], *, title: str, curr_sym: str) -> list[str]:
-    out = [f"<b>{title}</b>"]
+def _signed_rs0(amount: float) -> str:
+    """Signed rupees, no paise — sign outside the symbol (+₹1,234), matching
+    _fmt_rs and the rest of the bot's money formatting."""
+    return f"{'+' if amount >= 0 else '-'}₹{abs(amount):,.0f}"
+
+
+def _signed_usd(amount: float) -> str:
+    return f"{'+' if amount >= 0 else '-'}${abs(amount):,.2f}"
+
+
+# Telegram hard-caps a message at 4096 chars; stay clear of the edge.
+_MAX_MSG_CHARS = 4000
+
+
+def _format_section(rows: list[dict[str, Any]], *, curr_sym: str) -> list[str]:
+    """One line per holding: TICKER  Xsh  avg→cmp  P&L% emoji, priced in the
+    market's own currency."""
+    out: list[str] = []
     for h in rows:
         marker = _pnl_marker(h["unrealised_pnl"])
         qty_str = f"{h['quantity']:g}"
         out.append(
             f"<b>{h['ticker']:<10}</b> {qty_str}sh  "
             f"{curr_sym}{h['average_price']:,.2f}→{curr_sym}{h['current_price']:,.2f}  "
-            f"{('+' if h['unrealised_pnl'] >= 0 else '-')}{curr_sym}{abs(h['unrealised_pnl']):,.2f}  "
             f"{h['unrealised_pnl_pct']:+.2f}% {marker}"
         )
     return out
 
 
-def _format_portfolio(p: dict[str, Any]) -> str:
+def _format_portfolio(p: dict[str, Any]) -> list[str]:
+    """PORTFOLIO reply, as one message or two.
+
+    IND and US are reported separately in their own currency; the combined
+    total is INR only, with the US leg converted at the live USD/INR rate.
+    The old reply added a dollar subtotal onto a rupee one and labelled the
+    result "₹", understating the portfolio by roughly the FX rate.
+    """
     holdings = p.get("holdings") or []
     if not holdings:
-        return (
+        return [
             "📊 <b>Your Portfolio</b>\n"
             f"{_RULE}\n"
             "<i>No active holdings. Send BUY &lt;TICKER&gt; &lt;QTY&gt; &lt;PRICE&gt; to add one.</i>"
-        )
+        ]
+
     ind = [h for h in holdings if (h.get("market") or "IND").upper() == "IND"]
     us = [h for h in holdings if (h.get("market") or "").upper() == "US"]
+    rate = float(p.get("usd_inr_rate") or config.USD_INR_RATE)
 
-    lines = ["📊 <b>Your Portfolio</b>", _RULE]
+    ind_block: list[str] = []
     if ind:
-        lines.extend(_format_section(ind, title="🇮🇳 Indian Holdings", curr_sym="₹"))
-        ind_value = sum(h["current_value"] for h in ind)
-        ind_cost = sum(h["cost_value"] for h in ind)
-        ind_pnl = ind_value - ind_cost
-        ind_pct = (ind_pnl / ind_cost * 100) if ind_cost else 0.0
-        lines.append(
-            f"  Subtotal: {_fmt_rs(ind_value)} | P&amp;L {_fmt_rs(ind_pnl, with_sign=True)} ({ind_pct:+.2f}%)"
-        )
-    if us:
-        if ind:
-            lines.append("")
-        lines.extend(_format_section(us, title="🇺🇸 US Holdings", curr_sym="$"))
-        us_value = sum(h["current_value"] for h in us)
-        us_cost = sum(h["cost_value"] for h in us)
-        us_pnl = us_value - us_cost
-        us_pct = (us_pnl / us_cost * 100) if us_cost else 0.0
-        lines.append(
-            f"  Subtotal: ${us_value:,.2f} | P&amp;L {('+' if us_pnl>=0 else '-')}${abs(us_pnl):,.2f} ({us_pct:+.2f}%)"
+        ind_block.append(f"🇮🇳 <b>INDIAN</b> ({len(ind)} stocks)")
+        ind_block.extend(_format_section(ind, curr_sym="₹"))
+        ind_block.append(
+            f"Subtotal: ₹{p['ind_value_inr']:,.0f} | "
+            f"P&amp;L: {_signed_rs0(p['ind_pnl_inr'])} ({p['ind_pnl_pct']:+.1f}%) "
+            f"{_pnl_marker(p['ind_pnl_inr'])}"
         )
 
-    lines.append(_RULE)
-    lines.append(f"Combined:  {_fmt_rs(p['total_value'])} (IND ₹ + US $)")
-    lines.append(
-        f"P&amp;L:       {_fmt_rs(p['total_pnl'], with_sign=True)} "
-        f"({p['total_pnl_pct']:+.2f}%) {_pnl_marker(p['total_pnl'])}"
+    us_block: list[str] = []
+    if us:
+        us_block.append(f"🌐 <b>US</b> ({len(us)} stocks)")
+        us_block.extend(_format_section(us, curr_sym="$"))
+        us_block.append(
+            f"Subtotal: ${p['us_value_usd']:,.2f} (₹{p['us_value_inr']:,.0f})"
+        )
+        us_block.append(
+            f"P&amp;L: {_signed_usd(p['us_pnl_usd'])} ({p['us_pnl_pct']:+.1f}%) "
+            f"{_pnl_marker(p['us_pnl_usd'])}"
+        )
+
+    total_block = [
+        _RULE,
+        "💼 <b>TOTAL PORTFOLIO</b>",
+        f"Value: ₹{p['total_value_inr']:,.0f}",
+    ]
+    if ind:
+        total_block.append(f"  IND: ₹{p['ind_value_inr']:,.0f}")
+    if us:
+        total_block.append(f"  US:  ${p['us_value_usd']:,.2f} @ ₹{rate:,.2f}")
+    total_block.append(
+        f"P&amp;L:  {_signed_rs0(p['total_pnl_inr'])} ({p['total_pnl_pct']:+.1f}%) "
+        f"{_pnl_marker(p['total_pnl_inr'])}"
     )
-    lines.append(f"Holdings:  {len(ind)} Indian | {len(us)} US")
-    return "\n".join(lines)
+    total_block.append(_RULE)
+    total_block.append(
+        f"Holdings: {len(ind)} IND + {len(us)} US = {len(ind) + len(us)}"
+    )
+
+    header = ["📊 <b>Your Portfolio</b>", _RULE]
+    single = header + ind_block + ([""] + us_block if (ind and us) else us_block) + total_block
+    joined = "\n".join(single)
+    if len(joined) <= _MAX_MSG_CHARS:
+        return [joined]
+
+    # Too long for one Telegram message — break on the IND/US seam so each
+    # part is still a self-contained, readable statement.
+    first = "\n".join(header + ind_block)
+    second = "\n".join(
+        ["📊 <b>Your Portfolio</b> (continued)", _RULE] + us_block + total_block
+    )
+    return [first, second]
 
 
 def _format_quote(ticker: str, q: dict[str, Any] | None) -> str:
@@ -325,30 +373,33 @@ _EXECUTED_RE = re.compile(
 )
 
 
-async def process(text: str) -> str:
-    """Route a single Telegram message body to a reply string."""
+async def process(text: str) -> list[str]:
+    """Route a single Telegram message body to one or more reply messages.
+
+    Almost every command yields a single message; PORTFOLIO can split into two
+    when the holdings list would exceed Telegram's per-message limit."""
     if not text:
-        return "❌ Empty message. Send HELP for commands."
+        return ["❌ Empty message. Send HELP for commands."]
     text = text.strip()
     upper = text.upper()
 
     if upper in ("HELP", "H"):
-        return _HELP
+        return [_HELP]
     if upper in ("PORTFOLIO", "PORT", "P"):
         return _format_portfolio(portfolio_manager.get_portfolio())
     if upper in ("STATUS", "S"):
-        return _format_status()
+        return [_format_status()]
 
     m = _TRADE_RE.match(text)
     if m:
         action, market, ticker, qty_s, price_s = m.groups()
         if not price_s:
-            return f"❌ Price required: {action.upper()} {ticker.upper()} {qty_s} &lt;PRICE&gt;"
+            return [f"❌ Price required: {action.upper()} {ticker.upper()} {qty_s} &lt;PRICE&gt;"]
         try:
             qty = float(qty_s)
             price = float(price_s)
         except ValueError:
-            return "❌ Invalid number in command. Send HELP for examples."
+            return ["❌ Invalid number in command. Send HELP for examples."]
         market_u = market.upper() if market else None
         if action.upper() == "BUY":
             res = await portfolio_manager.add_position(ticker, qty, price, market=market_u)
@@ -356,32 +407,32 @@ async def process(text: str) -> str:
                 # Validation failures (e.g. an INR price on a US stock) carry a
                 # ready-made explanation; anything else is a bare error string.
                 if res.get("reply"):
-                    return res["reply"]
-                return f"❌ {res.get('error', 'BUY failed')}"
-            return _format_buy(res)
+                    return [res["reply"]]
+                return [f"❌ {res.get('error', 'BUY failed')}"]
+            return [_format_buy(res)]
         else:
             res = await portfolio_manager.close_position(ticker, qty, price)
             if not res.get("success"):
                 if res.get("reply"):
-                    return res["reply"]
-                return f"❌ {res.get('error', 'SELL failed')}"
-            return _format_sell(res)
+                    return [res["reply"]]
+                return [f"❌ {res.get('error', 'SELL failed')}"]
+            return [_format_sell(res)]
 
     m = _QUOTE_RE.match(text)
     if m:
         ticker = m.group(2).upper()
         q = await portfolio_manager.get_quote(ticker)
-        return _format_quote(ticker, q)
+        return [_format_quote(ticker, q)]
 
     m = _HISTORY_RE.match(text)
     if m:
         ticker = m.group(2).upper()
-        return _format_history(ticker, portfolio_manager.get_transactions(ticker, limit=5))
+        return [_format_history(ticker, portfolio_manager.get_transactions(ticker, limit=5))]
 
     m = _EXECUTED_RE.match(text)
     if m:
         ticker = m.group(1).upper()
         action = m.group(2).upper()
-        return handle_executed(ticker, action)
+        return [handle_executed(ticker, action)]
 
-    return "❌ Invalid command. Send HELP for commands."
+    return ["❌ Invalid command. Send HELP for commands."]
