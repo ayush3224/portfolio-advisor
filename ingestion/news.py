@@ -3,6 +3,11 @@
 Both sources are filtered to the user's holdings. Per-process in-memory cache
 keyed on (ticker, query); cache TTL from config.NEWS_CACHE_TTL (1 hour).
 RSS feeds are pulled once per process and reused across tickers.
+
+Volume is deliberately tight: news was the single largest block in the Claude
+prompts (untrimmed Tavily snippets across 5 results per ticker), so each
+holding gets at most TAVILY_RESULTS_PER_TICKER semantic hits plus
+RSS_ITEMS_PER_TICKER headlines, each summary cut to SUMMARY_WORD_LIMIT words.
 """
 
 from __future__ import annotations
@@ -24,6 +29,15 @@ try:
 except Exception:  # pragma: no cover — SDK optional at import time
     TavilyClient = None  # type: ignore[assignment]
 
+
+# Volume caps — see module docstring. Raising these raises per-run token cost
+# roughly linearly, so change them together with a token measurement.
+TAVILY_RESULTS_PER_TICKER = 2
+RSS_ITEMS_PER_TICKER = 2
+SUMMARY_WORD_LIMIT = 80
+
+_TAG_RE = re.compile(r"<[^>]+>")
+_WS_RE = re.compile(r"\s+")
 
 _cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _rss_cache: tuple[float, list[dict[str, Any]]] | None = None
@@ -86,6 +100,20 @@ _TICKER_ALIASES: dict[str, list[str]] = {
 }
 
 
+def trim_summary(text: str | None, *, words: int = SUMMARY_WORD_LIMIT) -> str:
+    """Strip HTML and clip to `words` words.
+
+    RSS summaries arrive as HTML fragments and Tavily snippets run to several
+    hundred words; neither adds signal past the lede for a trading decision."""
+    if not text:
+        return ""
+    clean = _WS_RE.sub(" ", _TAG_RE.sub(" ", str(text))).strip()
+    parts = clean.split(" ")
+    if len(parts) <= words:
+        return clean
+    return " ".join(parts[:words]) + "…"
+
+
 def _aliases_for(ticker: str) -> list[str]:
     return _TICKER_ALIASES.get(ticker.upper()) or [ticker.lower()]
 
@@ -122,7 +150,7 @@ def _all_rss_entries() -> list[dict[str, Any]]:
             out.append({
                 "title": entry.get("title") or "",
                 "url": entry.get("link") or "",
-                "snippet": entry.get("summary") or entry.get("description") or "",
+                "snippet": trim_summary(entry.get("summary") or entry.get("description")),
                 "published": entry.get("published") or entry.get("updated"),
                 "source": url,
             })
@@ -133,7 +161,7 @@ def _all_rss_entries() -> list[dict[str, Any]]:
 def fetch_rss_headlines(
     tickers: list[str],
     *,
-    max_per_ticker: int = 3,
+    max_per_ticker: int = RSS_ITEMS_PER_TICKER,
 ) -> dict[str, list[dict[str, Any]]]:
     """Return up to max_per_ticker RSS items per ticker, filtered by alias match."""
     entries = _all_rss_entries()
@@ -166,7 +194,7 @@ def _cache_key(ticker: str, query: str) -> str:
     return f"{ticker}::{query}"
 
 
-def search_for_ticker(ticker: str, *, max_results: int = 5) -> list[dict[str, Any]]:
+def search_for_ticker(ticker: str, *, max_results: int = TAVILY_RESULTS_PER_TICKER) -> list[dict[str, Any]]:
     """Return up to max_results news items for a single ticker. Cached for 1h."""
     query = f"{ticker} stock NSE India news today"
     key = _cache_key(ticker, query)
@@ -190,7 +218,7 @@ def search_for_ticker(ticker: str, *, max_results: int = 5) -> list[dict[str, An
             {
                 "title": r.get("title"),
                 "url": r.get("url"),
-                "snippet": r.get("content"),
+                "snippet": trim_summary(r.get("content")),
                 "published": r.get("published_date"),
                 "score": r.get("score"),
             }
@@ -203,11 +231,13 @@ def search_for_ticker(ticker: str, *, max_results: int = 5) -> list[dict[str, An
         return []
 
 
-def news_for_holdings(tickers: list[str], *, max_results: int = 5) -> dict[str, list[dict[str, Any]]]:
+def news_for_holdings(
+    tickers: list[str], *, max_results: int = TAVILY_RESULTS_PER_TICKER,
+) -> dict[str, list[dict[str, Any]]]:
     """Per-ticker news map combining Tavily (semantic) + RSS (broad).
     Per-ticker exceptions are caught — never crash the run."""
     try:
-        rss_map = fetch_rss_headlines(tickers, max_per_ticker=3)
+        rss_map = fetch_rss_headlines(tickers, max_per_ticker=RSS_ITEMS_PER_TICKER)
     except Exception as exc:
         log.warning("RSS aggregation failed: %s", exc)
         rss_map = {}

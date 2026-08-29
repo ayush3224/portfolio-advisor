@@ -35,9 +35,20 @@ _TELEGRAM_CHUNK = 3_800  # below Telegram's 4096 hard cap, leaves headroom
 # US macro context
 # ---------------------------------------------------------------------------
 
+def _drop_incomplete(hist: Any) -> Any:
+    """Drop rows whose Close is NaN.
+
+    Yahoo emits a row for the in-progress session with a null Close, so a bare
+    iloc[-1] reads NaN and poisons every derived figure (this is what rendered
+    the whole US report as `$nan`)."""
+    if hist is None or hist.empty:
+        return hist
+    return hist.dropna(subset=["Close"])
+
+
 def _yf_close(symbol: str) -> dict[str, Any] | None:
     try:
-        hist = yf.Ticker(symbol).history(period="5d", auto_adjust=False)
+        hist = _drop_incomplete(yf.Ticker(symbol).history(period="5d", auto_adjust=False))
         if hist is None or hist.empty or len(hist) < 2:
             return None
         last = hist.iloc[-1]
@@ -82,8 +93,8 @@ def _yf_holding_block(ticker: str, qty: float, avg_usd: float, usd_inr: float) -
     """Enrich a single US holding with live price + 52w range + day change."""
     try:
         t = yf.Ticker(_yf_symbol(ticker))
-        day_hist = t.history(period="5d", auto_adjust=False)
-        yr_hist = t.history(period="1y", auto_adjust=False)
+        day_hist = _drop_incomplete(t.history(period="5d", auto_adjust=False))
+        yr_hist = _drop_incomplete(t.history(period="1y", auto_adjust=False))
         if day_hist is None or day_hist.empty:
             return None
         last = day_hist.iloc[-1]
@@ -128,12 +139,12 @@ def _yf_holding_block(ticker: str, qty: float, avg_usd: float, usd_inr: float) -
 def _attach_news(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     tickers = [b["ticker"] for b in blocks]
     try:
-        news_map = news_mod.news_for_holdings(tickers, max_results=3)
+        news_map = news_mod.news_for_holdings(tickers)
     except Exception as exc:
         log.warning("news fetch failed: %s", exc)
         news_map = {}
     for b in blocks:
-        b["news"] = news_map.get(b["ticker"], [])[:3]
+        b["news"] = news_map.get(b["ticker"], [])[:2]
     return blocks
 
 

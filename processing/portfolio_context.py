@@ -73,7 +73,7 @@ def build_holding_block(row: dict[str, Any], *, news: list[dict[str, Any]],
         "week_52_high": price.get("week_52_high"),
         "week_52_low": price.get("week_52_low"),
         "sector": row.get("instrument_sector") or row.get("sector"),
-        "news": news[:5],
+        "news": news[:4],   # 2 Tavily + 2 RSS — see ingestion.news caps
         "analyst_signals": signals or {"bullish": 0, "bearish": 0, "score": 0},
     }
     if tech:
