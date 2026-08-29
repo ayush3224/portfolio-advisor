@@ -117,6 +117,9 @@ def run() -> dict[str, Any]:
     for rec in passing:
         try:
             rec["snapshot_id"] = snapshot_id
+            # Tie the call to the run that produced it so outcome_tracker can
+            # exclude the output of failed or credit-gapped runs exactly.
+            rec["run_id"] = result.get("run_id")
             rec_id = supabase_client.insert_recommendation(rec)
             persisted.append({**rec, "id": rec_id})
         except Exception as exc:

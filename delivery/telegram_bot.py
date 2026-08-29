@@ -25,7 +25,7 @@ PAPER_TRADING_BANNER = (
 )
 
 
-def send_alert(text: str, *, parse_mode: str = "HTML", disable_web_preview: bool = True) -> bool:
+def send_alert(text: str, *, parse_mode: str | None = "HTML", disable_web_preview: bool = True) -> bool:
     """Send a Telegram message. Returns True on success, False on failure or DRY_RUN."""
     if config.DRY_RUN:
         log.info("[DRY_RUN] telegram skip — message length=%d, body follows:\n%s",
@@ -35,12 +35,15 @@ def send_alert(text: str, *, parse_mode: str = "HTML", disable_web_preview: bool
         log.warning("Telegram creds missing — message dropped")
         return False
     url = f"{_API_BASE}/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
+    payload: dict[str, Any] = {
         "chat_id": config.TELEGRAM_CHAT_ID,
         "text": text[:4096],  # Telegram hard cap
-        "parse_mode": parse_mode,
         "disable_web_page_preview": disable_web_preview,
     }
+    # Telegram rejects a null parse_mode outright ("unsupported parse_mode"),
+    # so plain-text sends must omit the key rather than pass None.
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     try:
         r = requests.post(url, json=payload, timeout=15)
         r.raise_for_status()

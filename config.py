@@ -112,14 +112,16 @@ USD_TO_INR = USD_INR_RATE  # legacy alias
 
 # --- Project identity (used to scope run_log queries away from sibling apps) ---
 PROJECT_NAME = "portfolio-advisor"
-PROJECT_RUN_TYPES = ("premarket", "midday", "eod", "weekly_scorecard")
+PROJECT_RUN_TYPES = (
+    "premarket", "midday", "eod", "us_advisory",
+    "weekly_scorecard", "monthly_report", "outcome_tracker",
+)
 
 
 # --- Telegram channels (handle → weight) ---
 # Verified reachable 2026-08-29. Three handles were dropped that day because
-# Telegram no longer resolves them (deleted or renamed):
-#   Equity99Official_Equity_999 — same publisher as the live `equity99`
-#   rawattraderss, STOCK_MARKET_SEBI_R — weight-1 channels, no replacement
+# Telegram no longer resolves them (deleted or renamed) — one duplicated the
+# live `equity99` feed, the other two were weight-1 with no replacement.
 # Each dead handle cost one failed round-trip and a WARNING every run.
 TELEGRAM_CHANNELS: dict[str, int] = {
     "religarebrokingofficial": 3,

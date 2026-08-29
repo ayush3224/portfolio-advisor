@@ -105,6 +105,27 @@ def _insert_transaction(payload: dict[str, Any]) -> None:
         log.exception("transaction insert failed: %s", exc)
 
 
+def match_to_recommendation(ticker: str, action: str, price: float | None = None) -> str | None:
+    """Attribute a manual trade to today's matching recommendation.
+
+    Stamps the recommendation (and its backtest row) as executed and returns a
+    line for the bot reply, or None when nothing matches. The scorecard's
+    followed-vs-skipped split is only meaningful if this fires on every trade.
+    """
+    try:
+        rec = supabase_client.match_and_mark_execution(
+            ticker.upper().strip(), action, executed_price=price,
+        )
+    except Exception as exc:
+        log.warning("recommendation match failed for %s/%s: %s", ticker, action, exc)
+        return None
+    if not rec:
+        return None
+    conf = rec.get("confidence_score")
+    conf_str = f" (conf {conf:g}/10)" if conf is not None else ""
+    return f"📋 Matched to today's {rec.get('action')} recommendation{conf_str}"
+
+
 async def add_position(
     ticker: str, quantity: float, price: float, *, market: str | None = None,
 ) -> dict[str, Any]:
@@ -159,9 +180,7 @@ async def add_position(
         "avg_price_at_trade": new_avg,
     })
 
-    matched_rec = supabase_client.match_and_mark_execution(
-        ticker, "BUY", executed_price=price,
-    )
+    match_message = match_to_recommendation(ticker, "BUY", price)
 
     if resolved_market == "IND":
         quote = await upstox_market_data.get_live_quote(ticker)
@@ -185,7 +204,7 @@ async def add_position(
         "unrealised_pnl_pct": unrealised_pct,
         "buy_total": round(quantity * price, 2),
         "quote_source": (quote or {}).get("source"),
-        "matched_recommendation": matched_rec,
+        "match_message": match_message,
         "message": "BUY confirmed",
     }
 
@@ -244,9 +263,7 @@ async def close_position(ticker: str, quantity: float, price: float) -> dict[str
         "avg_price_at_trade": round(avg_price, 4),
     })
 
-    matched_rec = supabase_client.match_and_mark_execution(
-        ticker, "SELL", executed_price=price,
-    )
+    match_message = match_to_recommendation(ticker, "SELL", price)
 
     market_v = (existing.get("market") or detect_market(ticker)).upper()
     if market_v == "IND":
@@ -267,7 +284,7 @@ async def close_position(ticker: str, quantity: float, price: float) -> dict[str
         "realised_pnl": realised_pnl,
         "realised_pnl_pct": realised_pct,
         "current_price": round(live_price, 2),
-        "matched_recommendation": matched_rec,
+        "match_message": match_message,
         "message": "SELL confirmed",
     }
 

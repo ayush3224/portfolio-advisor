@@ -63,9 +63,9 @@ def _format_buy(reply: dict[str, Any]) -> str:
         f"CMP:       ₹{cmp_:,.2f}\n"
         f"P&amp;L:       {_fmt_rs(upnl, with_sign=True)} ({upct:+.2f}%) {_pnl_marker(upnl)}"
     )
-    matched = reply.get("matched_recommendation")
-    if matched:
-        body += "\n\n📋 Matched to today's recommendation"
+    match_message = reply.get("match_message")
+    if match_message:
+        body += f"\n\n{match_message}"
     return body
 
 
@@ -95,9 +95,9 @@ def _format_sell(reply: dict[str, Any]) -> str:
         )
     else:
         body += f"Position fully closed."
-    matched = reply.get("matched_recommendation")
-    if matched:
-        body += "\n\n📋 Matched to today's recommendation"
+    match_message = reply.get("match_message")
+    if match_message:
+        body += f"\n\n{match_message}"
     return body
 
 
@@ -246,6 +246,27 @@ _HELP = (
 )
 
 
+def handle_executed(ticker: str, action_word: str) -> str:
+    """EXECUTED <TICKER> <BUY|SELL|HOLD> — mark today's call as followed.
+
+    The bot already auto-matches trades entered through BUY/SELL; this covers
+    trades placed directly in the broker app, which is the common case.
+    """
+    ticker = ticker.upper().strip()
+    action_word = action_word.upper().strip()
+    rec = supabase_client.match_and_mark_execution(ticker, action_word)
+    if not rec:
+        return (
+            f"❌ No {action_word} recommendation found for <b>{ticker}</b> today"
+        )
+    conf = rec.get("confidence_score")
+    conf_str = f" (conf {conf:g}/10)" if conf is not None else ""
+    return (
+        f"✅ Marked as executed\n"
+        f"{ticker} {rec.get('action')}{conf_str} noted as followed."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Command parsing
 # ---------------------------------------------------------------------------
@@ -312,11 +333,6 @@ async def process(text: str) -> str:
     if m:
         ticker = m.group(1).upper()
         action = m.group(2).upper()
-        rec = supabase_client.match_and_mark_execution(ticker, action)
-        if not rec:
-            return (
-                f"❌ No matching {action} recommendation for <b>{ticker}</b> today."
-            )
-        return f"✅ Marked {ticker} {rec.get('action')} as executed"
+        return handle_executed(ticker, action)
 
     return "❌ Invalid command. Send HELP for commands."

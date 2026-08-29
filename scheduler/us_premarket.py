@@ -25,6 +25,7 @@ from delivery import telegram_bot
 from ingestion import news as news_mod
 from ingestion import polymarket, upstox_portfolio
 from processing import technicals as technicals_mod
+from storage import supabase_client
 
 log = logging.getLogger(__name__)
 
@@ -146,6 +147,42 @@ def _attach_news(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for b in blocks:
         b["news"] = news_map.get(b["ticker"], [])[:2]
     return blocks
+
+
+def _persist_us_recommendations(
+    recs: list[dict[str, Any]],
+    blocks_by_ticker: dict[str, dict[str, Any]],
+    run_id: str | None,
+) -> int:
+    """Write US calls to advisor_recommendations. Returns the number saved.
+
+    Without this the US advisory is fire-and-forget — the message goes out and
+    nothing records what was said, so no US call can ever be scored. Entry
+    price is the USD price the model actually saw, which is what the T+5/T+15
+    return has to be measured against.
+    """
+    saved = 0
+    for rec in recs:
+        try:
+            ticker = (rec.get("ticker") or "").upper().strip()
+            block = blocks_by_ticker.get(ticker)
+            if not ticker or block is None:
+                continue
+            rec_id = supabase_client.insert_recommendation({
+                "ticker": ticker,
+                "action": (rec.get("action") or "").upper().strip(),
+                "confidence_score": rec.get("confidence_score") or 0,
+                "entry_price": block.get("current_price_usd"),
+                "reasoning": rec.get("reasoning"),
+                "primary_driver": rec.get("risk_flag"),
+                "leverage_multiplier": 1,
+                "run_id": run_id,
+            })
+            if rec_id:
+                saved += 1
+        except Exception as exc:
+            log.exception("US insert_recommendation failed for %s: %s", rec.get("ticker"), exc)
+    return saved
 
 
 # ---------------------------------------------------------------------------
@@ -316,12 +353,15 @@ def run() -> dict[str, Any]:
     result = us_premarket_prompt.run(blocks, macro, poly_text)
     recs = result.get("recommendations") or []
     blocks_by_ticker = {b["ticker"]: b for b in blocks}
+    saved = _persist_us_recommendations(recs, blocks_by_ticker, result.get("run_id"))
 
     messages = format_us_advisory(blocks_by_ticker, recs, macro, poly_text)
     for msg in messages:
         telegram_bot.send_alert(msg)
-    log.info("us_premarket complete — %d holdings, %d telegram parts", len(blocks), len(messages))
-    return {"holdings": len(blocks), "recommendations": recs, "messages": len(messages)}
+    log.info("us_premarket complete — %d holdings, %d recs saved, %d telegram parts",
+             len(blocks), saved, len(messages))
+    return {"holdings": len(blocks), "recommendations": recs,
+            "persisted": saved, "messages": len(messages)}
 
 
 if __name__ == "__main__":

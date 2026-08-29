@@ -80,13 +80,13 @@ orders. Portfolio state is updated through a Telegram bot that exposes
 - Implemented in `ingestion/news.py`.
 
 ### F6. Telegram channel signals (Indian stocks)
-- 9 channels (`config.TELEGRAM_CHANNELS`) with weights:
+- 6 channels (`config.TELEGRAM_CHANNELS`) with weights:
   - `institutional` weight = 3: religarebrokingofficial,
-    ICICIdirectMARKETSstocks, Equity99Official_Equity_999, equity99,
-    nooreshtech.
+    ICICIdirectMARKETSstocks, equity99, nooreshtech.
   - `mid` weight = 2: STOCKGAINERSS.
-  - `retail` weight = 1: aakankshatrading, rawattraderss,
-    STOCK_MARKET_SEBI_R.
+  - `retail` weight = 1: aakankshatrading.
+- Three handles were dropped 2026-08-29 after Telegram stopped
+  resolving them; `config.TELEGRAM_CHANNELS` is the source of truth.
 - Telethon `StringSession` for headless cron auth (preferred over
   file sessions on a VPS).
 - Filtered to the currently-held ticker / sector set.

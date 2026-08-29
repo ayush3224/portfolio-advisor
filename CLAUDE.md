@@ -69,8 +69,8 @@ real holdings from Upstox and tells you what to do with them.
 - STOCKGAINERSS: weight=2
 - aakankshatrading: weight=1
 
-Removed 2026-08-29 (handles no longer resolve on Telegram):
-Equity99Official_Equity_999, rawattraderss, STOCK_MARKET_SEBI_R
+Three handles were removed 2026-08-29 because they no longer
+resolve on Telegram. `config.TELEGRAM_CHANNELS` is the source of truth.
 
 ## Project structure
 portfolio-advisor/

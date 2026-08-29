@@ -146,43 +146,66 @@ def insert_recommendation(rec: dict[str, Any]) -> str | None:
         "user_executed": rec.get("user_executed", False),
         "paper_trade": bool(rec.get("paper_trade", config.PAPER_TRADING)),
     }
-    res = client.table("advisor_recommendations").insert(payload).execute()
+    if rec.get("run_id"):
+        payload["run_id"] = rec["run_id"]
+    try:
+        res = client.table("advisor_recommendations").insert(payload).execute()
+    except Exception as exc:
+        # Pre-migration tables have no run_id column — retry without it.
+        log.warning("recommendation insert with run_id failed (%s) — retrying without", exc)
+        payload.pop("run_id", None)
+        res = client.table("advisor_recommendations").insert(payload).execute()
     return res.data[0]["id"] if res.data else None
 
 
 _BUY_ACTIONS = ("BUY", "BUY-MOMENTUM", "BUY-EVENT", "ADD")
-_SELL_ACTIONS = ("SELL", "PARTIAL-EXIT", "FULL-EXIT", "EXIT-PARTIAL", "EXIT-FULL")
+_SELL_ACTIONS = ("SELL", "PARTIAL-EXIT", "FULL-EXIT", "EXIT-PARTIAL",
+                 "EXIT-FULL", "BOOK-PROFIT", "TIGHTEN-SL")
 _HOLD_ACTIONS = ("HOLD", "TIGHTEN-SL")
+
+# A trade can also be attributed to a weaker-fitting call when no direct one
+# exists — buying a name Claude said to HOLD still counts as acting on the
+# advice. Searched only after the primary family comes up empty, so a real ADD
+# is never outranked by a higher-confidence HOLD.
+_FALLBACK_ACTIONS = {"BUY": ("HOLD",), "SELL": (), "HOLD": ()}
 
 
 def _todays_recommendation_for(ticker: str, action_family: str) -> dict[str, Any] | None:
-    """Return the most recent un-executed advisor_recommendation row for `ticker`
-    today (UTC), whose action belongs to the given family ('BUY' | 'SELL' | 'HOLD').
-    None if nothing matches."""
+    """Return today's (UTC) advisor_recommendation for `ticker` whose action
+    belongs to the given family ('BUY' | 'SELL' | 'HOLD'), highest confidence
+    first. None if nothing matches."""
     client = get_client()
     if client is None:
         return None
+    family = action_family.upper()
     families = {"BUY": _BUY_ACTIONS, "SELL": _SELL_ACTIONS, "HOLD": _HOLD_ACTIONS}
-    actions = families.get(action_family.upper())
+    actions = families.get(family)
     if not actions:
         return None
     today = datetime.now(timezone.utc).date().isoformat()
     start_iso = f"{today}T00:00:00+00:00"
     end_iso = f"{today}T23:59:59+00:00"
-    try:
+
+    def _lookup(candidates: tuple[str, ...]) -> dict[str, Any] | None:
+        if not candidates:
+            return None
         res = (
             client.table("advisor_recommendations")
             .select("*")
             .eq("ticker", ticker)
-            .in_("action", list(actions))
+            .in_("action", list(candidates))
             .gte("created_at", start_iso)
             .lte("created_at", end_iso)
+            .order("confidence_score", desc=True)
             .order("created_at", desc=True)
             .limit(1)
             .execute()
         )
         rows = res.data or []
         return rows[0] if rows else None
+
+    try:
+        return _lookup(actions) or _lookup(_FALLBACK_ACTIONS.get(family, ()))
     except Exception as exc:
         log.warning("recommendation lookup failed for %s/%s: %s", ticker, action_family, exc)
         return None
@@ -210,10 +233,19 @@ def mark_recommendation_executed(
         payload["executed_price"] = round(float(executed_price), 4)
     try:
         client.table("advisor_recommendations").update(payload).eq("id", rec_id).execute()
-        return True
     except Exception as exc:
         log.warning("mark_recommendation_executed failed for %s: %s", rec_id, exc)
         return False
+
+    # Mirror onto backtest_results so weekly/monthly execution stats see it.
+    bt_payload: dict[str, Any] = {"user_executed": True}
+    if "executed_price" in payload:
+        bt_payload["executed_price"] = payload["executed_price"]
+    try:
+        client.table("backtest_results").update(bt_payload).eq("recommendation_id", rec_id).execute()
+    except Exception as exc:
+        log.warning("backtest_results execution stamp failed for %s: %s", rec_id, exc)
+    return True
 
 
 def match_and_mark_execution(
