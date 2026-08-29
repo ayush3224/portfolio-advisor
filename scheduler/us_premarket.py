@@ -24,6 +24,7 @@ from analysis import us_premarket_prompt
 from delivery import telegram_bot
 from ingestion import news as news_mod
 from ingestion import polymarket, upstox_portfolio
+from processing import technicals as technicals_mod
 
 log = logging.getLogger(__name__)
 
@@ -96,7 +97,9 @@ def _yf_holding_block(ticker: str, qty: float, avg_usd: float, usd_inr: float) -
         unreal_usd = round((cmp_usd - avg_usd) * qty, 2)
         unreal_inr = round(unreal_usd * usd_inr, 2) if usd_inr else None
         unreal_pct = round((cmp_usd - avg_usd) / avg_usd * 100, 2) if avg_usd else 0.0
-        return {
+        # Tier 1 technicals — enrichment only; None on any failure, never fatal.
+        tech = technicals_mod.compute_technicals(ticker, "US")
+        block = {
             "ticker": ticker,
             "company": (t.info or {}).get("longName") if hasattr(t, "info") else None,
             "qty": qty,
@@ -113,6 +116,10 @@ def _yf_holding_block(ticker: str, qty: float, avg_usd: float, usd_inr: float) -
             "wk52_high": round(wk52_high, 2) if wk52_high else None,
             "wk52_low": round(wk52_low, 2) if wk52_low else None,
         }
+        if tech:
+            block["technicals"] = tech
+            block["technicals_text"] = technicals_mod.format_technicals_block(tech)
+        return block
     except Exception as exc:
         log.warning("holding block %s failed: %s", ticker, exc)
         return None

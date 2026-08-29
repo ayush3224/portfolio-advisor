@@ -93,6 +93,7 @@ portfolio-advisor/
 ├── processing/
 │   ├── __init__.py
 │   ├── portfolio_context.py # Builds per-holding context block
+│   ├── technicals.py       # Tier 1 indicators: RSI, EMA 20/50, volume, VWAP
 │   ├── position_sizer.py   # Confidence → capital fraction → qty
 │   └── risk_guardrails.py  # Enforce all capital rules
 ├── analysis/

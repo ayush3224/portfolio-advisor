@@ -7,6 +7,7 @@ tavily-python
 python-dotenv
 requests
 pandas
+pandas-ta
 feedparser
 beautifulsoup4
 pytz

@@ -13,6 +13,7 @@ from typing import Any
 
 from ingestion import news as news_mod
 from ingestion import telegram_scraper, upstox_prices
+from processing import technicals as technicals_mod
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +38,10 @@ def _row_avg_price(row: dict[str, Any]) -> float:
     return float(row.get("average_price") or row.get("avg_price") or row.get("buy_avg") or 0)
 
 
+def _row_market(row: dict[str, Any]) -> str:
+    return (row.get("market") or "IND").upper()
+
+
 def build_holding_block(row: dict[str, Any], *, news: list[dict[str, Any]],
                         signals: dict[str, Any] | None) -> dict[str, Any]:
     ticker = _row_ticker(row) or "UNKNOWN"
@@ -47,7 +52,11 @@ def build_holding_block(row: dict[str, Any], *, news: list[dict[str, Any]],
     cmp_ = price.get("cmp") or row.get("last_price")
     pnl = (float(cmp_) - avg) * qty if cmp_ and avg else None
     pnl_pct = ((float(cmp_) - avg) / avg * 100) if cmp_ and avg else None
-    return {
+
+    # Tier 1 technicals — enrichment only; None on any failure, never fatal.
+    tech = technicals_mod.compute_technicals(ticker, _row_market(row))
+
+    block = {
         "ticker": ticker,
         "instrument_key": instrument_key,
         "quantity": qty,
@@ -67,6 +76,10 @@ def build_holding_block(row: dict[str, Any], *, news: list[dict[str, Any]],
         "news": news[:5],
         "analyst_signals": signals or {"bullish": 0, "bearish": 0, "score": 0},
     }
+    if tech:
+        block["technicals"] = tech
+        block["technicals_text"] = technicals_mod.format_technicals_block(tech)
+    return block
 
 
 def build_full_context(snapshot: dict[str, Any]) -> dict[str, Any]:

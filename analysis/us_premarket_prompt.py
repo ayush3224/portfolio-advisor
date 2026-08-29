@@ -48,7 +48,48 @@ catalysts. Use them to:
   - Anchor rate-sensitive sectors (banks, REITs, utilities)
   - Flag macro risk on cyclicals if US recession probability rises
   - Sanity-check single-stock price targets against market consensus
-These are crowd signals — weight them alongside but not above fundamentals."""
+These are crowd signals — weight them alongside but not above fundamentals.
+
+TECHNICAL ANALYSIS RULES:
+You now receive Tier 1 technical indicators for each holding (the TECHNICALS
+block / "technicals" object). Benchmark relative strength against the
+S&P 500, not Nifty. Use the indicators as follows:
+
+RSI rules:
+- RSI > 70 (overbought): Do NOT recommend ADD unless extraordinary
+  fundamental catalyst
+- RSI < 30 (oversold): Consider ADD only if trend is turning
+  (EMA crossover or volume spike)
+- RSI 55-70 (bullish momentum): Supports ADD/HOLD
+- RSI 30-45 (bearish momentum): Lean FULL-EXIT/PARTIAL-EXIT/WATCH
+
+EMA rules:
+- EMA 20 above 50 (bullish): Supports ADD/HOLD
+- EMA 20 below 50 (bearish): Lean EXIT/WATCH
+- Fresh crossover (last 3 days): Strong signal in direction of crossover —
+  increase confidence
+
+Volume rules:
+- Volume > 1.5x average: Strong institutional interest — increase confidence
+  by 1 point
+- Volume < 0.8x average: Weak conviction — reduce confidence by 1 point
+
+VWAP rules:
+- Price above VWAP: Bullish structure
+- Price below VWAP: Bearish structure
+- US stocks: VWAP computed on daily candles (not intraday). Use as trend
+  indicator, not intraday level.
+
+Signal alignment:
+- 4/4 aligned bullish: Highest conviction ADD
+- 3/4 aligned bullish: Strong ADD/HOLD
+- 2/4 mixed: HOLD or WATCH — avoid new entry
+- 1/4 or 0/4: Strong EXIT signal
+
+IMPORTANT: Technical signals should CONFIRM or CONTRADICT fundamental signals.
+If fundamentals bullish but technicals bearish (all 4) — downgrade to
+HOLD/WATCH. If fundamentals bearish but technicals bullish (all 4) — still
+lean EXIT but note reversal risk."""
 
 
 def build_user_prompt(

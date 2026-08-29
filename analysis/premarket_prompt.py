@@ -74,7 +74,45 @@ PREDICTION MARKET SIGNALS show crowd-sourced probability of macro events
   - Incorporate oil price probabilities for energy stocks and import-heavy
     sectors (oil PSUs, aviation, paints)
 These are market consensus signals — weight them alongside but not above
-technical signals."""
+technical signals.
+
+TECHNICAL ANALYSIS RULES:
+You now receive Tier 1 technical indicators for each holding (the TECHNICALS
+block / "technicals" object). Use them as follows:
+
+RSI rules:
+- RSI > 70 (overbought): Do NOT recommend ADD unless extraordinary
+  fundamental catalyst
+- RSI < 30 (oversold): Consider ADD only if trend is turning
+  (EMA crossover or volume spike)
+- RSI 55-70 (bullish momentum): Supports ADD/HOLD
+- RSI 30-45 (bearish momentum): Lean EXIT/WATCH
+
+EMA rules:
+- EMA 20 above 50 (bullish): Supports ADD/HOLD
+- EMA 20 below 50 (bearish): Lean EXIT/WATCH
+- Fresh crossover (last 3 days): Strong signal in direction of crossover —
+  increase confidence
+
+Volume rules:
+- Volume > 1.5x average: Strong institutional interest — increase confidence
+  by 1 point
+- Volume < 0.8x average: Weak conviction — reduce confidence by 1 point
+
+VWAP rules:
+- Price above VWAP: Bullish intraday structure
+- Price below VWAP: Bearish intraday structure
+
+Signal alignment:
+- 4/4 aligned bullish: Highest conviction ADD
+- 3/4 aligned bullish: Strong ADD/HOLD
+- 2/4 mixed: HOLD or WATCH — avoid new entry
+- 1/4 or 0/4: Strong EXIT signal
+
+IMPORTANT: Technical signals should CONFIRM or CONTRADICT fundamental signals.
+If fundamentals bullish but technicals bearish (all 4) — downgrade to
+HOLD/WATCH. If fundamentals bearish but technicals bullish (all 4) — still
+lean EXIT but note reversal risk."""
 
 
 def build_user_prompt(context: dict[str, Any], market_context: dict[str, Any]) -> str:
