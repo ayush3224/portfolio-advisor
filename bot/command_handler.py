@@ -68,19 +68,34 @@ def _pnl_marker(pnl: float | None) -> str:
 # before any database write — SPDR in particular quotes as NaN forever, so
 # accepting it books a position whose CMP never updates.
 REJECTED_TICKERS = {
-    "SPDR": "GLD (SPDR Gold Trust) or SPY (S&P 500)",
+    "SPDR": "GLD (SPDR Gold Trust) or SPY (S&P 500 ETF)",
     "NIFTY": "NIFTYBEES or ICICINIFTY",
     "SENSEX": "SETFNIF50 or NIFTYBEES",
-    "BITCOIN": "Not supported — equity only",
-    "GOLD": "GLD (US) or GOLDBEES (India)",
+    "GOLD": "GLD (US ETF) or GOLDBEES (India ETF)",
+    # None = no equity equivalent to point at; these are out of scope entirely
+    # rather than mistyped, so they get the not-supported message instead of a
+    # "did you mean".
+    "BITCOIN": None,
+    "BTC": None,
+    "ETH": None,
+    "ETHEREUM": None,
+    "CRYPTO": None,
 }
 
 
 def _format_rejected_ticker(ticker: str) -> str:
-    suggestion = REJECTED_TICKERS[ticker]
+    """Rejection reply. A mistyped symbol gets a suggestion; an unsupported
+    asset class gets told it is out of scope."""
+    suggestion = REJECTED_TICKERS.get(ticker)
+    if suggestion is None:
+        return (
+            f"❌ {ticker} is not supported.\n"
+            f"This system trades equity and ETFs only.\n"
+            f"Resend with a valid stock or ETF ticker."
+        )
     return (
         f"❌ {ticker} is not a valid ticker symbol.\n"
-        f"Did you mean: {html.escape(suggestion)}?\n\n"
+        f"Did you mean: {html.escape(suggestion)}?\n"
         f"Resend with the correct ticker."
     )
 
