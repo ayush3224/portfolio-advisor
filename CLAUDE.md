@@ -64,12 +64,13 @@ real holdings from Upstox and tells you what to do with them.
 ## Telegram channels (weighted)
 - religarebrokingofficial: weight=3
 - ICICIdirectMARKETSstocks: weight=3
-- Equity99Official_Equity_999: weight=3
 - equity99: weight=3
+- nooreshtech: weight=3
 - STOCKGAINERSS: weight=2
 - aakankshatrading: weight=1
-- rawattraderss: weight=1
-- STOCK_MARKET_SEBI_R: weight=1
+
+Removed 2026-08-29 (handles no longer resolve on Telegram):
+Equity99Official_Equity_999, rawattraderss, STOCK_MARKET_SEBI_R
 
 ## Project structure
 portfolio-advisor/

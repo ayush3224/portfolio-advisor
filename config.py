@@ -116,16 +116,18 @@ PROJECT_RUN_TYPES = ("premarket", "midday", "eod", "weekly_scorecard")
 
 
 # --- Telegram channels (handle → weight) ---
+# Verified reachable 2026-08-29. Three handles were dropped that day because
+# Telegram no longer resolves them (deleted or renamed):
+#   Equity99Official_Equity_999 — same publisher as the live `equity99`
+#   rawattraderss, STOCK_MARKET_SEBI_R — weight-1 channels, no replacement
+# Each dead handle cost one failed round-trip and a WARNING every run.
 TELEGRAM_CHANNELS: dict[str, int] = {
     "religarebrokingofficial": 3,
     "ICICIdirectMARKETSstocks": 3,
-    "Equity99Official_Equity_999": 3,
     "equity99": 3,
     "nooreshtech": 3,
     "STOCKGAINERSS": 2,
     "aakankshatrading": 1,
-    "rawattraderss": 1,
-    "STOCK_MARKET_SEBI_R": 1,
 }
 
 
