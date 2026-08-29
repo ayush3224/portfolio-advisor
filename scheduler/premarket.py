@@ -22,6 +22,7 @@ import config
 from analysis import premarket_prompt
 from delivery import telegram_bot
 from ingestion import market_context, polymarket, upstox_portfolio
+from ingestion.news import get_tavily_call_count
 from processing import portfolio_context, position_sizer, risk_guardrails
 from storage import supabase_client
 
@@ -60,6 +61,10 @@ def run() -> dict[str, Any]:
         return {"recommendations": [], "rejected": [], "skipped": [], "aborted": True}
 
     context = portfolio_context.build_full_context(snapshot)
+    # News is fetched inside build_full_context; read the Tavily meter now so
+    # the count can be stamped on this run's run_log row below.
+    tavily_calls = get_tavily_call_count()
+    log.info("Tavily calls this run: %d", tavily_calls)
     macro = market_context.get_market_context()
 
     # Polymarket prediction-market signals — best-effort enrichment of `macro`.
@@ -81,6 +86,7 @@ def run() -> dict[str, Any]:
 
     result = premarket_prompt.run(context, macro)
     raw_recs = result.get("recommendations") or []
+    supabase_client.record_tavily_calls(result.get("run_id"), tavily_calls)
 
     sized: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
@@ -154,6 +160,7 @@ def run() -> dict[str, Any]:
         "rejected": rejected,
         "skipped": skipped,
         "event_warning": warning,
+        "tavily_calls": tavily_calls,
     }
 
 

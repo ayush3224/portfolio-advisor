@@ -9,6 +9,7 @@ Output strings use HTML formatting (matches the bot_runner's parse_mode=HTML).
 from __future__ import annotations
 
 import logging
+import math
 import re
 from datetime import datetime
 from typing import Any
@@ -35,6 +36,20 @@ def _fmt_rs(amount: float | None, *, with_sign: bool = False) -> str:
     return f"{sign}₹{abs(amount):,.2f}"
 
 
+def _sym(market: str | None) -> str:
+    """Currency symbol for a market — US prices are USD, everything else INR."""
+    return "$" if (market or "IND").upper() == "US" else "₹"
+
+
+def _fmt_ccy(amount: float | None, market: str | None, *, with_sign: bool = False) -> str:
+    """Money in the market's own currency. US holdings are priced in dollars;
+    rendering them with ₹ is what made an INR-priced US BUY look plausible."""
+    if amount is None:
+        return "—"
+    sign = "+" if with_sign and amount > 0 else ("-" if with_sign and amount < 0 else "")
+    return f"{sign}{_sym(market)}{abs(amount):,.2f}"
+
+
 def _pnl_marker(pnl: float | None) -> str:
     if pnl is None:
         return ""
@@ -53,19 +68,23 @@ def _format_buy(reply: dict[str, Any]) -> str:
     cmp_ = reply["current_price"]
     upnl = reply["unrealised_pnl"]
     upct = reply["unrealised_pnl_pct"]
+    market = reply.get("market") or "IND"
+    sym = _sym(market)
     body = (
         f"✅ <b>BUY Confirmed — {ticker}</b>\n"
         f"{_RULE}\n"
-        f"Bought:    {qty} shares @ ₹{reply['average_price']:,.2f}\n"
-        f"Total:     {_fmt_rs(reply['buy_total'])}\n\n"
+        f"Bought:    {qty} shares @ {sym}{reply.get('buy_price', reply['average_price']):,.2f}\n"
+        f"Total:     {_fmt_ccy(reply['buy_total'], market)}\n\n"
         f"Your position:\n"
-        f"Shares:    {total_qty} | Avg: ₹{avg:,.2f}\n"
-        f"CMP:       ₹{cmp_:,.2f}\n"
-        f"P&amp;L:       {_fmt_rs(upnl, with_sign=True)} ({upct:+.2f}%) {_pnl_marker(upnl)}"
+        f"Shares:    {total_qty} | Avg: {sym}{avg:,.2f}\n"
+        f"CMP:       {sym}{cmp_:,.2f}\n"
+        f"P&amp;L:       {_fmt_ccy(upnl, market, with_sign=True)} ({upct:+.2f}%) {_pnl_marker(upnl)}"
     )
     match_message = reply.get("match_message")
     if match_message:
         body += f"\n\n{match_message}"
+    if market.upper() == "US":
+        body += f"\n\n{portfolio_manager.CURRENCY_HINT}"
     return body
 
 
@@ -78,20 +97,22 @@ def _format_sell(reply: dict[str, Any]) -> str:
     realised = reply["realised_pnl"]
     realised_pct = reply["realised_pnl_pct"]
     cmp_ = reply["current_price"]
+    market = reply.get("market") or "IND"
+    sym = _sym(market)
 
     body = (
         f"✅ <b>SELL Confirmed — {ticker}</b>\n"
         f"{_RULE}\n"
-        f"Sold:      {qty} shares @ ₹{sell_price:,.2f}\n"
-        f"Realised:  {_fmt_rs(realised, with_sign=True)} ({realised_pct:+.2f}%) {_pnl_marker(realised)}\n\n"
+        f"Sold:      {qty} shares @ {sym}{sell_price:,.2f}\n"
+        f"Realised:  {_fmt_ccy(realised, market, with_sign=True)} ({realised_pct:+.2f}%) {_pnl_marker(realised)}\n\n"
     )
     if rem > 0:
         unreal = round((cmp_ - avg) * rem, 2)
         unreal_pct = round((cmp_ - avg) / avg * 100, 2) if avg else 0.0
         body += (
-            f"Remaining: {rem} shares @ ₹{avg:,.2f} avg\n"
-            f"CMP:       ₹{cmp_:,.2f}\n"
-            f"Unrealised: {_fmt_rs(unreal, with_sign=True)} ({unreal_pct:+.2f}%) {_pnl_marker(unreal)}"
+            f"Remaining: {rem} shares @ {sym}{avg:,.2f} avg\n"
+            f"CMP:       {sym}{cmp_:,.2f}\n"
+            f"Unrealised: {_fmt_ccy(unreal, market, with_sign=True)} ({unreal_pct:+.2f}%) {_pnl_marker(unreal)}"
         )
     else:
         body += f"Position fully closed."
@@ -162,6 +183,8 @@ def _format_quote(ticker: str, q: dict[str, Any] | None) -> str:
     if not q or q.get("ltp") is None:
         return f"❌ Quote unavailable for {ticker}"
     ltp = float(q["ltp"])
+    if math.isnan(ltp):
+        return f"❌ Quote unavailable for {ticker}"
     prev = float(q.get("prev_close")) if q.get("prev_close") is not None else None
     open_ = q.get("open")
     high = q.get("high")
@@ -170,23 +193,27 @@ def _format_quote(ticker: str, q: dict[str, Any] | None) -> str:
     change = (ltp - prev) if prev is not None else None
     change_pct = ((ltp - prev) / prev * 100) if prev else None
 
+    market = (q.get("market") or "IND").upper()
+    sym = _sym(market)
+    venue = "US" if market == "US" else "NSE"
+
     lines = [
-        f"📈 <b>{ticker}</b> (NSE)",
+        f"📈 <b>{ticker}</b> ({venue})",
         _RULE,
-        f"LTP:    ₹{ltp:,.2f}",
+        f"LTP:    {sym}{ltp:,.2f}",
     ]
     if open_ is not None:
-        lines.append(f"Open:   ₹{float(open_):,.2f}")
+        lines.append(f"Open:   {sym}{float(open_):,.2f}")
     if high is not None:
-        lines.append(f"High:   ₹{float(high):,.2f}")
+        lines.append(f"High:   {sym}{float(high):,.2f}")
     if low is not None:
-        lines.append(f"Low:    ₹{float(low):,.2f}")
+        lines.append(f"Low:    {sym}{float(low):,.2f}")
     if volume:
         v = int(volume)
         lines.append(f"Volume: {v/1_000_000:.2f}M" if v >= 1_000_000 else f"Volume: {v:,}")
     if change is not None and change_pct is not None:
         lines.append(
-            f"Change: {_fmt_rs(change, with_sign=True)} ({change_pct:+.2f}%) {_pnl_marker(change)}"
+            f"Change: {_fmt_ccy(change, market, with_sign=True)} ({change_pct:+.2f}%) {_pnl_marker(change)}"
         )
     return "\n".join(lines)
 
@@ -242,7 +269,9 @@ _HELP = (
     "<b>QUOTE</b> &lt;TICKER&gt; (or Q) — live price\n"
     "<b>STATUS</b> (or S) — system health\n"
     "<b>HISTORY</b> &lt;TICKER&gt; — last 5 trades\n"
-    "<b>HELP</b> (or H) — this message"
+    "<b>HELP</b> (or H) — this message\n"
+    f"{_RULE}\n"
+    f"{portfolio_manager.CURRENCY_HINT}"
 )
 
 
@@ -324,11 +353,17 @@ async def process(text: str) -> str:
         if action.upper() == "BUY":
             res = await portfolio_manager.add_position(ticker, qty, price, market=market_u)
             if not res.get("success"):
+                # Validation failures (e.g. an INR price on a US stock) carry a
+                # ready-made explanation; anything else is a bare error string.
+                if res.get("reply"):
+                    return res["reply"]
                 return f"❌ {res.get('error', 'BUY failed')}"
             return _format_buy(res)
         else:
             res = await portfolio_manager.close_position(ticker, qty, price)
             if not res.get("success"):
+                if res.get("reply"):
+                    return res["reply"]
                 return f"❌ {res.get('error', 'SELL failed')}"
             return _format_sell(res)
 

@@ -32,7 +32,9 @@ except Exception:  # pragma: no cover — SDK optional at import time
 
 # Volume caps — see module docstring. Raising these raises per-run token cost
 # roughly linearly, so change them together with a token measurement.
-TAVILY_RESULTS_PER_TICKER = 2
+# Tavily is metered (free tier), so this is 1 result per *gated* ticker —
+# see should_call_tavily below for which holdings earn a call at all.
+TAVILY_RESULTS_PER_TICKER = 1
 RSS_ITEMS_PER_TICKER = 2
 SUMMARY_WORD_LIMIT = 80
 
@@ -179,6 +181,95 @@ def fetch_rss_headlines(
     return out
 
 
+# ---------------------------------------------------------------------------
+# Tavily call budget
+# ---------------------------------------------------------------------------
+# Tavily is the only metered source in this module (free tier: 1000 credits /
+# month across ~60 runs). RSS covers Indian names broadly and for free, so a
+# holding only earns a Tavily call when it is actually doing something —
+# moving, under an open recommendation, or uncovered by the free sources.
+
+# Minimum absolute day move (%) that makes an Indian holding worth a call.
+PRICE_MOVE_THRESHOLD_PCT = 0.5
+
+# Actions that mean "we have a live decision on this name" — worth fresh news
+# even on a flat tape. HOLD deliberately isn't here.
+_ACTIONABLE_ACTIONS = (
+    "ADD", "BUY", "BUY-MOMENTUM", "BUY-EVENT",
+    "EXIT-FULL", "EXIT-PARTIAL", "FULL-EXIT", "PARTIAL-EXIT",
+    "SELL", "BOOK-PROFIT", "TIGHTEN-SL",
+)
+
+_tavily_calls_this_run = 0
+
+
+def get_tavily_call_count() -> int:
+    """Return the number of Tavily API calls made since the last read, and
+    reset the counter. Schedulers call this once per run and log the value to
+    run_log so the monthly credit burn is visible without the Tavily console."""
+    global _tavily_calls_this_run
+    count = _tavily_calls_this_run
+    _tavily_calls_this_run = 0
+    return count
+
+
+def _has_cached_tavily(ticker: str) -> bool:
+    query = _tavily_query(ticker)
+    cached = _cache.get(_cache_key(ticker, query))
+    return bool(cached and time.time() - cached[0] < config.NEWS_CACHE_TTL)
+
+
+def should_call_tavily(
+    ticker: str,
+    *,
+    market: str = "IND",
+    change_pct: float | None = None,
+    actionable: bool = False,
+    has_free_news: bool = False,
+) -> tuple[bool, str]:
+    """Decide whether `ticker` earns a Tavily call. Returns (call?, reason).
+
+    Always call for:
+      - US stocks — the RSS feeds are Indian-market only, so there is no backup
+      - any holding that moved >= PRICE_MOVE_THRESHOLD_PCT today
+      - any holding under a non-HOLD recommendation today
+      - any holding whose day move is unknown and that no free source covers,
+        since there is then no evidence it is quiet
+
+    Skip only a holding that is Indian, flat and un-actioned: with the price
+    barely moving and no open decision, there is nothing for a news search to
+    resolve, and RSS still runs (free) for it either way.
+
+    Note on `has_free_news`: a Tavily result already in `_cache` costs no API
+    call at all (search_for_ticker serves it without hitting the network), so
+    "already cached" can't be a reason to *call*. It's only consulted when the
+    day move is unknown — otherwise every ticker would qualify on the first
+    run of a fresh process, where the cache is empty by definition, and the
+    gate would never skip anything.
+    """
+    if (market or "IND").upper() == "US":
+        return True, "US ticker (no RSS coverage)"
+    if change_pct is not None and abs(change_pct) >= PRICE_MOVE_THRESHOLD_PCT:
+        return True, f"moved {change_pct:+.2f}% today"
+    if actionable:
+        return True, "open non-HOLD recommendation today"
+    if change_pct is None and not has_free_news:
+        return True, "day move unknown and no RSS/cached news"
+    if change_pct is None:
+        return False, "day move unknown but RSS covered"
+    return False, f"flat IND holding ({change_pct:+.2f}%), no open decision"
+
+
+def _actionable_tickers_today(tickers: list[str]) -> set[str]:
+    """Tickers with an ADD/EXIT/TIGHTEN-style recommendation logged today."""
+    try:
+        from storage import supabase_client
+        return supabase_client.todays_actioned_tickers(_ACTIONABLE_ACTIONS) & set(tickers)
+    except Exception as exc:
+        log.warning("actionable-ticker lookup failed: %s", exc)
+        return set()
+
+
 def _get_client() -> Any | None:
     global _client
     if _client is not None:
@@ -194,9 +285,14 @@ def _cache_key(ticker: str, query: str) -> str:
     return f"{ticker}::{query}"
 
 
+def _tavily_query(ticker: str) -> str:
+    return f"{ticker} stock NSE India news today"
+
+
 def search_for_ticker(ticker: str, *, max_results: int = TAVILY_RESULTS_PER_TICKER) -> list[dict[str, Any]]:
     """Return up to max_results news items for a single ticker. Cached for 1h."""
-    query = f"{ticker} stock NSE India news today"
+    global _tavily_calls_this_run
+    query = _tavily_query(ticker)
     key = _cache_key(ticker, query)
     now = time.time()
     cached = _cache.get(key)
@@ -207,6 +303,7 @@ def search_for_ticker(ticker: str, *, max_results: int = TAVILY_RESULTS_PER_TICK
     if client is None:
         return []
     try:
+        _tavily_calls_this_run += 1
         resp = client.search(
             query=query,
             search_depth="basic",
@@ -232,29 +329,66 @@ def search_for_ticker(ticker: str, *, max_results: int = TAVILY_RESULTS_PER_TICK
 
 
 def news_for_holdings(
-    tickers: list[str], *, max_results: int = TAVILY_RESULTS_PER_TICKER,
+    tickers: list[str],
+    *,
+    max_results: int = TAVILY_RESULTS_PER_TICKER,
+    holdings: list[dict[str, Any]] | None = None,
+    market: str | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
-    """Per-ticker news map combining Tavily (semantic) + RSS (broad).
-    Per-ticker exceptions are caught — never crash the run."""
+    """Per-ticker news map combining Tavily (semantic, gated) + RSS (broad, free).
+
+    `holdings` — the enriched holding rows, used only to read each ticker's
+    market and day move so quiet Indian names can skip the metered Tavily
+    call. `market` forces the market for every ticker (the US scheduler passes
+    "US"). Without either, every ticker is treated as an Indian holding of
+    unknown move, which is the conservative side of the gate.
+
+    Per-ticker exceptions are caught — never crash the run.
+    """
     try:
         rss_map = fetch_rss_headlines(tickers, max_per_ticker=RSS_ITEMS_PER_TICKER)
     except Exception as exc:
         log.warning("RSS aggregation failed: %s", exc)
         rss_map = {}
 
+    by_ticker: dict[str, dict[str, Any]] = {}
+    for row in holdings or []:
+        t = row.get("ticker") or row.get("trading_symbol")
+        if t:
+            by_ticker[t] = row
+    actionable = _actionable_tickers_today(tickers)
+
     out: dict[str, list[dict[str, Any]]] = {}
+    skipped: list[str] = []
     for t in tickers:
+        row = by_ticker.get(t) or {}
+        row_market = (market or row.get("market") or "IND").upper()
+        change_pct = row.get("day_change_pct")
+        call, reason = should_call_tavily(
+            t,
+            market=row_market,
+            change_pct=change_pct,
+            actionable=t in actionable,
+            has_free_news=bool(rss_map.get(t)) or _has_cached_tavily(t),
+        )
         items: list[dict[str, Any]] = []
-        try:
-            items = search_for_ticker(t, max_results=max_results)
-        except Exception as exc:
-            log.exception("news_for_holdings (tavily) failed for %s: %s", t, exc)
+        if call:
+            try:
+                items = search_for_ticker(t, max_results=max_results)
+            except Exception as exc:
+                log.exception("news_for_holdings (tavily) failed for %s: %s", t, exc)
+        else:
+            skipped.append(t)
+        log.debug("tavily %s for %s — %s", "call" if call else "skip", t, reason)
         seen_urls = {it.get("url") for it in items if it.get("url")}
         for r in rss_map.get(t, []):
             if r.get("url") and r["url"] not in seen_urls:
                 items.append(r)
                 seen_urls.add(r["url"])
         out[t] = items
+    if skipped:
+        log.info("Tavily skipped %d/%d quiet holdings: %s",
+                 len(skipped), len(tickers), ", ".join(sorted(skipped)))
     return out
 
 

@@ -24,6 +24,7 @@ from analysis import us_premarket_prompt
 from delivery import telegram_bot
 from ingestion import news as news_mod
 from ingestion import polymarket, upstox_portfolio
+from ingestion.news import get_tavily_call_count
 from processing import technicals as technicals_mod
 from storage import supabase_client
 
@@ -140,7 +141,7 @@ def _yf_holding_block(ticker: str, qty: float, avg_usd: float, usd_inr: float) -
 def _attach_news(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     tickers = [b["ticker"] for b in blocks]
     try:
-        news_map = news_mod.news_for_holdings(tickers)
+        news_map = news_mod.news_for_holdings(tickers, market="US")
     except Exception as exc:
         log.warning("news fetch failed: %s", exc)
         news_map = {}
@@ -350,8 +351,12 @@ def run() -> dict[str, Any]:
     poly_markets = _run_async(polymarket.fetch_relevant_markets("us"))
     poly_text = polymarket.format_for_prompt(poly_markets)
 
+    tavily_calls = get_tavily_call_count()
+    log.info("Tavily calls this run: %d", tavily_calls)
+
     result = us_premarket_prompt.run(blocks, macro, poly_text)
     recs = result.get("recommendations") or []
+    supabase_client.record_tavily_calls(result.get("run_id"), tavily_calls)
     blocks_by_ticker = {b["ticker"]: b for b in blocks}
     saved = _persist_us_recommendations(recs, blocks_by_ticker, result.get("run_id"))
 
@@ -361,7 +366,8 @@ def run() -> dict[str, Any]:
     log.info("us_premarket complete — %d holdings, %d recs saved, %d telegram parts",
              len(blocks), saved, len(messages))
     return {"holdings": len(blocks), "recommendations": recs,
-            "persisted": saved, "messages": len(messages)}
+            "persisted": saved, "messages": len(messages),
+            "tavily_calls": tavily_calls}
 
 
 if __name__ == "__main__":

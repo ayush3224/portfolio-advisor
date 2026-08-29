@@ -105,21 +105,20 @@ def _enrich_with_quotes(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     us_quotes: dict[str, dict[str, Any]] = {}
     if us_rows:
-        import yfinance as yf  # local import — kept out of the hot path for IND-only runs
+        # US names never go to Upstox — it carries no US instruments. The
+        # shared helper reads fast_info rather than the last daily candle,
+        # which is NaN before the US session prints one (i.e. all morning IST).
         for r in us_rows:
             t = r["ticker"]
-            yf_sym = t.replace(".", "-").upper()
             try:
-                hist = yf.Ticker(yf_sym).history(period="2d", auto_adjust=False)
-                if hist is not None and not hist.empty:
-                    close = float(hist["Close"].iloc[-1])
-                    if not math.isnan(close):
-                        us_quotes[t] = {
-                            "ltp": close,
-                            "source": "yfinance",
-                        }
+                q = upstox_market_data.get_us_quote(t)
             except Exception as exc:
                 log.warning("yfinance quote for %s failed: %s", t, exc)
+                continue
+            if q and q.get("ltp") is not None:
+                us_quotes[t] = q
+            else:
+                log.warning("no live US price for %s — showing average price", t)
 
     enriched: list[dict[str, Any]] = []
     for r in rows:
@@ -134,6 +133,19 @@ def _enrich_with_quotes(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if ltp is None or (isinstance(ltp, float) and math.isnan(ltp)):
             ltp = None
         current_price = float(ltp if ltp is not None else avg_price)
+        prev_close = q.get("prev_close")
+        try:
+            prev_close = float(prev_close) if prev_close is not None else None
+            if prev_close is not None and math.isnan(prev_close):
+                prev_close = None
+        except (TypeError, ValueError):
+            prev_close = None
+        # Today's move, used by ingestion.news to decide whether a holding is
+        # quiet enough to skip the (metered) Tavily call.
+        day_change_pct = (
+            round((current_price - prev_close) / prev_close * 100, 4)
+            if prev_close and ltp is not None else None
+        )
         current_value = round(qty * current_price, 2)
         cost = qty * avg_price
         unrealised_pnl = round((current_price - avg_price) * qty, 2)
@@ -161,6 +173,8 @@ def _enrich_with_quotes(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "market": market,
             "currency": currency,
             "current_price": current_price,
+            "prev_close": prev_close,
+            "day_change_pct": day_change_pct,
             "current_value": current_value,
             "current_value_inr": current_value_inr,
             "cost_value": round(cost, 2),

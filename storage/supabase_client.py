@@ -211,6 +211,31 @@ def _todays_recommendation_for(ticker: str, action_family: str) -> dict[str, Any
         return None
 
 
+def todays_actioned_tickers(actions: tuple[str, ...]) -> set[str]:
+    """Tickers with a recommendation in `actions` logged today (UTC).
+
+    Used by ingestion.news to keep fetching news for names we have an open
+    non-HOLD call on, however quiet their price is.
+    """
+    client = get_client()
+    if client is None:
+        return set()
+    today = datetime.now(timezone.utc).date().isoformat()
+    try:
+        res = (
+            client.table("advisor_recommendations")
+            .select("ticker")
+            .in_("action", list(actions))
+            .gte("created_at", f"{today}T00:00:00+00:00")
+            .lte("created_at", f"{today}T23:59:59+00:00")
+            .execute()
+        )
+    except Exception as exc:
+        log.warning("todays_actioned_tickers failed: %s", exc)
+        return set()
+    return {r["ticker"] for r in (res.data or []) if r.get("ticker")}
+
+
 def mark_recommendation_executed(
     rec_id: str,
     *,
@@ -375,27 +400,50 @@ def finish_run(
     output_tokens: int | None = None,
     estimated_cost_usd: float | None = None,
     error_message: str | None = None,
+    tavily_calls: int | None = None,
 ) -> None:
     if config.DRY_RUN or run_id is None:
         log.info(
-            "[DRY_RUN/skip] finish_run status=%s model=%s in=%s out=%s cost=%s",
-            status, model_used, input_tokens, output_tokens, estimated_cost_usd,
+            "[DRY_RUN/skip] finish_run status=%s model=%s in=%s out=%s cost=%s tavily=%s",
+            status, model_used, input_tokens, output_tokens, estimated_cost_usd, tavily_calls,
         )
         return
     client = get_client()
     if client is None:
         return
-    client.table("run_log").update(
-        {
-            "completed_at": _utcnow_iso(),
-            "status": status,
-            "model_used": model_used,
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "estimated_cost_usd": estimated_cost_usd,
-            "error_message": error_message,
-        }
-    ).eq("id", run_id).execute()
+    payload: dict[str, Any] = {
+        "completed_at": _utcnow_iso(),
+        "status": status,
+        "model_used": model_used,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "estimated_cost_usd": estimated_cost_usd,
+        "error_message": error_message,
+    }
+    if tavily_calls is not None:
+        payload["tavily_calls"] = tavily_calls
+    client.table("run_log").update(payload).eq("id", run_id).execute()
+
+
+def record_tavily_calls(run_id: str | None, tavily_calls: int) -> None:
+    """Stamp a finished run with how many Tavily calls it made.
+
+    Separate from finish_run because the Claude call closes its own run_log row
+    inside analysis.claude_client, while the news fetch that spends the Tavily
+    credits happens earlier, in the scheduler. Never fatal: a missing
+    `tavily_calls` column must not fail a run that otherwise succeeded.
+    """
+    if config.DRY_RUN or run_id is None:
+        log.info("[DRY_RUN/skip] record_tavily_calls run_id=%s tavily_calls=%s",
+                 run_id, tavily_calls)
+        return
+    client = get_client()
+    if client is None:
+        return
+    try:
+        client.table("run_log").update({"tavily_calls": tavily_calls}).eq("id", run_id).execute()
+    except Exception as exc:
+        log.warning("tavily_calls not recorded for run %s: %s", run_id, exc)
 
 
 def get_run_log_between(start_iso: str, end_iso: str) -> list[dict[str, Any]]:

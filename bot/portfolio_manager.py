@@ -12,11 +12,11 @@ Live prices for the post-trade snapshot come from ingestion.upstox_market_data
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import math
 from datetime import datetime, timezone
 from typing import Any
-
-import yfinance as yf
 
 import config
 from ingestion import upstox_market_data, upstox_portfolio
@@ -42,41 +42,143 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+_market_cache: dict[str, str] = {}
+
+
+def _market_from_holdings(ticker: str) -> str | None:
+    """`market` as recorded on the ticker's holding row — the source of truth
+    for anything already owned, which covers every US name the hardcoded set
+    below doesn't know about. Cached per process; never fatal."""
+    if ticker in _market_cache:
+        return _market_cache[ticker]
+    client = supabase_client.get_client()
+    if client is None:
+        return None
+    try:
+        res = (
+            client.table("holdings")
+            .select("market")
+            .eq("ticker", ticker)
+            .eq("is_active", True)
+            .limit(1)
+            .execute()
+        )
+        rows = res.data or []
+    except Exception as exc:
+        log.warning("market lookup failed for %s: %s", ticker, exc)
+        return None
+    if not rows or not rows[0].get("market"):
+        return None
+    market = str(rows[0]["market"]).upper()
+    _market_cache[ticker] = market
+    return market
+
+
 def detect_market(ticker: str) -> str:
-    """Heuristic: ticker maps to NSE if in INSTRUMENT_KEYS, else US if known,
-    else best-guess by name length (NSE symbols are usually ≤10 chars). For
-    ambiguity, callers should pass an explicit market via BUY-US."""
+    """Resolve a ticker to 'IND' or 'US'.
+
+    Order: Upstox instrument key (definitively NSE) → the `market` column on
+    an existing holding → the known-US set → default IND. For a genuinely
+    ambiguous new symbol, callers should pass an explicit market via BUY-US.
+    """
     t = ticker.upper().strip()
     if config.instrument_key_for(t):
         return "IND"
+    held = _market_from_holdings(t)
+    if held in ("IND", "US"):
+        return held
     if t in _KNOWN_US_TICKERS:
         return "US"
     return "IND"  # safest default — most users hold Indian stocks
 
 
 def _yf_quote_for_ticker(ticker: str) -> dict[str, Any] | None:
-    """Quote for a US ticker via yfinance (no .NS suffix).
-    Berkshire's BRK.B is served as BRK-B on Yahoo — normalise dots to hyphens."""
-    try:
-        t = yf.Ticker(ticker.upper().replace(".", "-"))
-        hist = t.history(period="2d", auto_adjust=False)
-        if hist is None or hist.empty:
-            return None
-        last = hist.iloc[-1]
-        prev_close = float(hist["Close"].iloc[-2]) if len(hist) >= 2 else None
-        return {
-            "ticker": ticker.upper(),
-            "ltp": round(float(last["Close"]), 2),
-            "prev_close": prev_close,
-            "open": round(float(last["Open"]), 2),
-            "high": round(float(last["High"]), 2),
-            "low": round(float(last["Low"]), 2),
-            "volume": int(last["Volume"]) if last["Volume"] else None,
-            "source": "yfinance",
-        }
-    except Exception as exc:
-        log.warning("yfinance US quote for %s failed: %s", ticker, exc)
+    """Quote for a US ticker — delegates to the shared yfinance path so the
+    bot and the schedulers agree on what "live US price" means."""
+    return upstox_market_data.get_us_quote(ticker)
+
+
+def get_cmp_for_display(ticker: str, market: str | None = None) -> float | None:
+    """Live CMP for a bot reply, from the right source for the market.
+
+    US → yfinance (Upstox carries no US instruments, so asking it returns
+    nothing and the reply used to fall back to a NaN / the entry price).
+    IND → Upstox v3 LTP, with the module's own yfinance `.NS` fallback.
+
+    Returns None when no live price is available; callers decide what to
+    show instead (usually the average price).
+    """
+    ticker = ticker.upper().strip()
+    resolved = (market or detect_market(ticker)).upper()
+    if resolved == "US":
+        quote = upstox_market_data.get_us_quote(ticker)
+    else:
+        quote = upstox_market_data.get_live_quote_sync(ticker)
+    if not quote:
         return None
+    ltp = quote.get("ltp")
+    if ltp is None:
+        return None
+    try:
+        value = float(ltp)
+    except (TypeError, ValueError):
+        return None
+    return None if math.isnan(value) else value
+
+
+# --- Currency sanity check for US BUYs -------------------------------------
+# A US price typed in rupees (e.g. "BUY NVDA 0.1 18000") silently books a
+# position at ~190x its real cost basis and poisons every P&L downstream.
+# Anything above this threshold is rejected as a suspected INR price...
+US_PRICE_SANITY_LIMIT = 5000.0
+
+# ...except for the handful of US names that legitimately trade above it.
+# GOOGL is here defensively (post-split it trades ~$200, but the list is
+# cheap insurance against a future split-adjusted spike).
+HIGH_PRICE_US_TICKERS = {
+    "EQIX", "BRK-B", "BRK.B", "BRK-A", "BRK.A", "GOOGL", "NVR", "BKNG",
+}
+
+# Shown on HELP and on every US BUY confirmation — the whole class of bug
+# above starts with typing a rupee price into a dollar-denominated trade.
+CURRENCY_HINT = (
+    "💡 US stocks: price in USD ($)\n"
+    "Indian stocks: price in INR (₹)"
+)
+
+
+def _currency_rejection(ticker: str, quantity: float, price: float) -> dict[str, Any]:
+    """Reply payload for a US BUY whose price looks like INR. Nothing is
+    written to the database — the command is refused outright."""
+    live = get_cmp_for_display(ticker, "US")
+    live_str = f"${live:,.2f}" if live is not None else "unavailable"
+    suggested = f"{live:.2f}" if live is not None else "<USD_PRICE>"
+    reply = (
+        f"❌ Price ₹{price:,.2f} looks like INR.\n"
+        f"US stocks need price in USD ($).\n"
+        f"Example: BUY {ticker} {quantity:g} {suggested}\n\n"
+        f"Current {ticker} price: {live_str}\n\n"
+        f"Resend with USD price to confirm.\n\n"
+        f"{CURRENCY_HINT}"
+    )
+    return {
+        "success": False,
+        "error": f"{ticker}: price {price:g} looks like INR, not USD",
+        "reply": reply,
+        "rejected": "currency",
+        "current_price": live,
+    }
+
+
+def _quote_ltp(quote: dict[str, Any] | None) -> float | None:
+    """LTP out of a quote payload, with NaN treated as missing."""
+    if not quote or quote.get("ltp") is None:
+        return None
+    try:
+        value = float(quote["ltp"])
+    except (TypeError, ValueError):
+        return None
+    return None if math.isnan(value) else value
 
 
 def _fetch_existing(ticker: str) -> dict[str, Any] | None:
@@ -142,6 +244,16 @@ async def add_position(
         return {"success": False, "error": f"unknown market {resolved_market!r}"}
     currency = "USD" if resolved_market == "US" else "INR"
 
+    # Currency guard runs before every write path: a rejected BUY must leave
+    # holdings and transactions untouched.
+    if (
+        resolved_market == "US"
+        and price > US_PRICE_SANITY_LIMIT
+        and ticker not in HIGH_PRICE_US_TICKERS
+    ):
+        log.warning("rejected US BUY %s %g @ %g — price looks like INR", ticker, quantity, price)
+        return _currency_rejection(ticker, quantity, price)
+
     existing = _fetch_existing(ticker)
     if existing:
         old_qty = float(existing["quantity"])
@@ -185,8 +297,9 @@ async def add_position(
     if resolved_market == "IND":
         quote = await upstox_market_data.get_live_quote(ticker)
     else:
-        quote = _yf_quote_for_ticker(ticker)
-    live_price = float(quote["ltp"]) if quote and quote.get("ltp") else new_avg
+        quote = await asyncio.to_thread(upstox_market_data.get_us_quote, ticker)
+    cmp_ = _quote_ltp(quote)
+    live_price = cmp_ if cmp_ is not None else new_avg
     unrealised = round((live_price - new_avg) * new_qty, 2)
     unrealised_pct = round((live_price - new_avg) / new_avg * 100, 4) if new_avg else 0.0
 
@@ -199,6 +312,7 @@ async def add_position(
         "quantity_added": quantity,
         "total_quantity": new_qty,
         "average_price": new_avg,
+        "buy_price": round(price, 4),
         "current_price": round(live_price, 2),
         "unrealised_pnl": unrealised,
         "unrealised_pnl_pct": unrealised_pct,
@@ -269,13 +383,16 @@ async def close_position(ticker: str, quantity: float, price: float) -> dict[str
     if market_v == "IND":
         quote = await upstox_market_data.get_live_quote(ticker)
     else:
-        quote = _yf_quote_for_ticker(ticker)
-    live_price = float(quote["ltp"]) if quote and quote.get("ltp") else price
+        quote = await asyncio.to_thread(upstox_market_data.get_us_quote, ticker)
+    cmp_ = _quote_ltp(quote)
+    live_price = cmp_ if cmp_ is not None else price
 
     return {
         "success": True,
         "ticker": ticker,
         "action": "SELL",
+        "market": market_v,
+        "currency": existing.get("currency") or ("USD" if market_v == "US" else "INR"),
         "quantity_sold": quantity,
         "remaining_quantity": remaining,
         "sell_price": round(price, 2),
@@ -284,6 +401,7 @@ async def close_position(ticker: str, quantity: float, price: float) -> dict[str
         "realised_pnl": realised_pnl,
         "realised_pnl_pct": realised_pct,
         "current_price": round(live_price, 2),
+        "quote_source": (quote or {}).get("source"),
         "match_message": match_message,
         "message": "SELL confirmed",
     }
@@ -294,10 +412,21 @@ def get_portfolio() -> dict[str, Any]:
 
 
 async def get_quote(ticker: str) -> dict[str, Any] | None:
+    """Live quote for QUOTE <TICKER>, routed by market.
+
+    US tickers go to yfinance — Upstox has no US instruments, so routing them
+    there returns nothing and the reply renders an empty/NaN price.
+    """
     ticker = ticker.upper().strip()
-    if detect_market(ticker) == "US":
-        return _yf_quote_for_ticker(ticker)
-    return await upstox_market_data.get_live_quote(ticker)
+    market = detect_market(ticker)
+    if market == "US":
+        quote = await asyncio.to_thread(upstox_market_data.get_us_quote, ticker)
+    else:
+        quote = await upstox_market_data.get_live_quote(ticker)
+    if quote:
+        quote.setdefault("market", market)
+        quote.setdefault("currency", "USD" if market == "US" else "INR")
+    return quote
 
 
 def get_transactions(ticker: str, limit: int = 5) -> list[dict[str, Any]]:

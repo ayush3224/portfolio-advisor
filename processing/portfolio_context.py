@@ -87,7 +87,9 @@ def build_full_context(snapshot: dict[str, Any]) -> dict[str, Any]:
     rows: list[dict[str, Any]] = (snapshot.get("holdings") or []) + (snapshot.get("positions") or [])
     tickers = sorted({_row_ticker(r) for r in rows if _row_ticker(r)})
 
-    news_map = news_mod.news_for_holdings(tickers)
+    # `holdings=rows` lets ingestion.news read each ticker's market and day
+    # move, so quiet Indian names skip the metered Tavily call.
+    news_map = news_mod.news_for_holdings(tickers, holdings=rows)
     try:
         signals_map = telegram_scraper.signals_for_holdings(tickers)
     except Exception as exc:

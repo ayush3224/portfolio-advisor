@@ -149,10 +149,13 @@ create table if not exists run_log (
     input_tokens            int,
     output_tokens           int,
     estimated_cost_usd      numeric(10, 6),
+    tavily_calls            int,                  -- Tavily API calls spent by this run
     error_message           text
 );
 -- Idempotent for already-existing run_log tables that pre-date the project column.
 alter table run_log add column if not exists project varchar(30) default 'portfolio-advisor';
+-- Tavily calls spent by the run (free-tier credit tracking).
+alter table run_log add column if not exists tavily_calls int;
 create index if not exists idx_run_log_started on run_log (started_at desc);
 create index if not exists idx_run_log_run_type on run_log (run_type);
 create index if not exists idx_run_log_project on run_log (project);

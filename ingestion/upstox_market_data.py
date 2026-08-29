@@ -62,6 +62,20 @@ async def _upstox_ltp(instrument_keys: list[str]) -> dict[str, dict[str, Any]] |
         return None
 
 
+def _clean_float(value: Any) -> float | None:
+    """float(value) with NaN/None/garbage collapsed to None.
+
+    NaN is truthy and propagates silently through arithmetic, so every
+    yfinance number is funnelled through here before it reaches a caller."""
+    if value is None:
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return None if math.isnan(out) else out
+
+
 def _yfinance_quote(ticker: str) -> dict[str, Any] | None:
     """Single-ticker fallback via yfinance, honoring YFINANCE_IND_SYMBOL_MAP
     for NSE tickers Yahoo doesn't carry under the default `<TICKER>.NS`."""
@@ -70,25 +84,97 @@ def _yfinance_quote(ticker: str) -> dict[str, Any] | None:
         return None
     try:
         t = yf.Ticker(symbol)
-        hist = t.history(period="2d", auto_adjust=False)
+        hist = t.history(period="5d", auto_adjust=False)
         if hist is None or hist.empty:
             return None
-        last = hist.iloc[-1]
-        close = float(last["Close"])
-        if math.isnan(close):
+        # The final row is NaN whenever the session hasn't printed a candle
+        # yet, so work off the last row with a real close.
+        valid = hist.dropna(subset=["Close"])
+        if valid.empty:
             return None
+        last = valid.iloc[-1]
+        close = _clean_float(last["Close"])
+        if close is None:
+            return None
+        prev_close = _clean_float(valid["Close"].iloc[-2]) if len(valid) >= 2 else None
+        volume = _clean_float(last["Volume"])
         return {
             "ltp": round(close, 2),
-            "open": round(float(last["Open"]), 2),
-            "high": round(float(last["High"]), 2),
-            "low": round(float(last["Low"]), 2),
+            "open": round(_clean_float(last["Open"]) or close, 2),
+            "high": round(_clean_float(last["High"]) or close, 2),
+            "low": round(_clean_float(last["Low"]) or close, 2),
             "close": round(close, 2),
-            "volume": int(last["Volume"]) if last["Volume"] and not math.isnan(float(last["Volume"])) else None,
-            "timestamp": hist.index[-1].isoformat(),
+            "prev_close": round(prev_close, 2) if prev_close is not None else None,
+            "volume": int(volume) if volume else None,
+            "timestamp": valid.index[-1].isoformat(),
             "source": "yfinance",
         }
     except Exception as exc:
         log.warning("yfinance fallback for %s failed: %s", ticker, exc)
+        return None
+
+
+def get_us_quote(ticker: str) -> dict[str, Any] | None:
+    """Live quote for a US-listed ticker via yfinance (never Upstox).
+
+    Upstox only carries NSE/BSE instruments, so every US symbol has to come
+    from Yahoo. `fast_info.last_price` is used for the LTP because
+    `history()`'s final row is NaN whenever the US session hasn't printed a
+    candle yet (pre-market IST) — that NaN is what surfaced as "$nan" in the
+    bot replies. OHLC comes from the last *valid* daily bar.
+
+    Yahoo serves Berkshire's BRK.B as BRK-B, so dots are normalised to hyphens.
+    """
+    symbol = ticker.upper().strip().replace(".", "-")
+    try:
+        t = yf.Ticker(symbol)
+        ltp = prev_close = open_ = high = low = volume = None
+        try:
+            fast = t.fast_info
+            # fast_info's OHLC is the *current* session, so it stays consistent
+            # with last_price. The daily candle below is a session behind
+            # whenever today's bar hasn't been written yet.
+            ltp = _clean_float(fast.last_price)
+            prev_close = _clean_float(getattr(fast, "previous_close", None))
+            open_ = _clean_float(getattr(fast, "open", None))
+            high = _clean_float(getattr(fast, "day_high", None))
+            low = _clean_float(getattr(fast, "day_low", None))
+            volume = _clean_float(getattr(fast, "last_volume", None))
+        except Exception as exc:
+            log.debug("fast_info for %s failed: %s", symbol, exc)
+
+        if ltp is None or prev_close is None:
+            hist = t.history(period="5d", auto_adjust=False)
+            if hist is not None and not hist.empty:
+                valid = hist.dropna(subset=["Close"])
+                if not valid.empty:
+                    row = valid.iloc[-1]
+                    if ltp is None:
+                        ltp = _clean_float(row["Close"])
+                        open_ = open_ if open_ is not None else _clean_float(row["Open"])
+                        high = high if high is not None else _clean_float(row["High"])
+                        low = low if low is not None else _clean_float(row["Low"])
+                        volume = volume if volume is not None else _clean_float(row["Volume"])
+                    if prev_close is None and len(valid) >= 2:
+                        prev_close = _clean_float(valid["Close"].iloc[-2])
+
+        if ltp is None:
+            log.warning("no usable yfinance price for US ticker %s", ticker)
+            return None
+        return {
+            "ticker": ticker.upper(),
+            "ltp": round(ltp, 2),
+            "prev_close": round(prev_close, 2) if prev_close is not None else None,
+            "open": round(open_, 2) if open_ is not None else None,
+            "high": round(high, 2) if high is not None else None,
+            "low": round(low, 2) if low is not None else None,
+            "volume": int(volume) if volume else None,
+            "currency": "USD",
+            "market": "US",
+            "source": "yfinance",
+        }
+    except Exception as exc:
+        log.warning("yfinance US quote for %s failed: %s", ticker, exc)
         return None
 
 
